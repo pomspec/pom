@@ -322,6 +322,37 @@ Feature: Change
   );
 });
 
+test("init writes a config the project can load: .mts unless its package.json says module", async () => {
+  const { init } = await import("./init.ts");
+  const { loadConfig } = await import("./config.ts");
+  for (const [type, name] of [
+    ["commonjs", "pom.config.mts"],
+    [null, "pom.config.mts"],
+    ["module", "pom.config.ts"],
+  ] as const) {
+    const dir = mkdtempSync(path.join(tmpdir(), "pom-init-"));
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify(type ? { type } : {}));
+    const made = init({ agent: null, baseURL: "http://localhost:4321", commit: false, dir });
+    assert.equal(path.basename(made.config), name);
+    assert.equal((await loadConfig({ cwd: dir })).baseURL, "http://localhost:4321");
+    // Run again, it keeps the config it made.
+    assert.equal(init({ agent: null, baseURL: null, commit: false, dir }).config, made.config);
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a .ts config Node reads as CommonJS says to rename it", async () => {
+  const { loadConfig } = await import("./config.ts");
+  const dir = mkdtempSync(path.join(tmpdir(), "pom-cjs-"));
+  writeFileSync(path.join(dir, "package.json"), JSON.stringify({ type: "commonjs" }));
+  writeFileSync(
+    path.join(dir, "pom.config.ts"),
+    'export default { baseURL: "http://localhost:1" };\n',
+  );
+  await assert.rejects(loadConfig({ cwd: dir }), /rename it pom\.config\.mts/);
+  rmSync(dir, { force: true, recursive: true });
+});
+
 test("config: defaults keep today's run; a width's name is a word; video names a width there is", async () => {
   const { resolveConfig } = await import("./config.ts");
   const config = resolveConfig({}, "/app", null);

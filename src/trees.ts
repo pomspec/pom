@@ -53,11 +53,23 @@ export function split(
   return out;
 }
 
-/** Two outlines as one: a node both have (by its place) once, its children merged. */
+/**
+ * Two outlines as one: a node both have (by its place) once, its children merged.
+ * Siblings alike (two paragraphs, which have no name) are told apart by their order:
+ * the second of them in one outline is the second in the other.
+ */
 function merge(a: ReadonlyArray<OutlineNode>, b: ReadonlyArray<OutlineNode>): Array<OutlineNode> {
   const out = a.map((node) => ({ ...node }));
+  const seen = new Map<string, number>();
   for (const node of b) {
-    const at = out.findIndex((mine) => chainOf([], mine) === chainOf([], node));
+    const chain = chainOf([], node);
+    const nth = seen.get(chain) ?? 0;
+    seen.set(chain, nth + 1);
+    const at = out.findIndex(
+      (mine, index) =>
+        chainOf([], mine) === chain &&
+        out.slice(0, index).filter((before) => chainOf([], before) === chain).length === nth,
+    );
     if (at === -1) out.push(node);
     else out[at] = { ...out[at]!, children: merge(out[at]!.children, node.children) };
   }

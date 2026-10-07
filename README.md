@@ -27,7 +27,8 @@ npx playwright install chromium
 npx pomspec init http://localhost:3000
 ```
 
-`pom init` writes `pom.config.ts` and `spec/`, then asks which agent should write your
+`pom init` writes `pom.config.ts` (`pom.config.mts` where your package.json isn't
+`"type": "module"`) and `spec/`, then asks which agent should write your
 journeys (Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode or pi). It runs that
 agent's own command, signed in as you, on your machine: pom never signs in anywhere
 itself. Then it maps your app: every page, pictured, and the ones no journey visits yet.
@@ -78,11 +79,11 @@ Each side is an address, or its app started for its turn (`--start`, else
 `pom.config.ts`'s `webServer`) in its own checkout: this one for the head, `--base-dir`
 for the base, one side at a time. pom never starts a side where something already
 answers: an app that is up already is given by its address. Without a base, only the
-head is played. The run is kept in `.pom/runs/<run>/`, its id printed last, for
-`pom upload`.
+head is played. The run is kept in `.pom/runs/<run>/`, its id printed last; `pom upload`
+sends the newest unless `--run <id>` names another.
 
 ```sh
-POM_RUNNER_TOKEN=pomr_… npx pomspec upload --run <id> --repo <owner/name> --pull <n>
+POM_RUNNER_TOKEN=pomr_… npx pomspec upload --repo <owner/name> --pull <n>
 ```
 
 `--run` names a folder in `.pom/runs/`. pom sends each video with its still, storyboard

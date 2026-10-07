@@ -100,7 +100,11 @@ export const DEFAULT_WIDTHS: Readonly<Record<string, WidthConfig>> = {
   phone: { device: "Pixel 7" },
 };
 
-const NAMES = ["pom.config.ts", "pom.config.mjs", "pom.config.js"];
+/**
+ * Where a config may be: `.mts` where the project's package.json isn't `"type": "module"`,
+ * whose `.ts` files Node reads as CommonJS (`pom init` writes that one there).
+ */
+export const NAMES = ["pom.config.ts", "pom.config.mts", "pom.config.mjs", "pom.config.js"];
 
 /** The config file for a spec folder: beside it, then in its parent. */
 export function findConfig(spec: string): string | null {
@@ -182,7 +186,19 @@ export async function loadConfig(options: {
     const at = spec ?? path.join(options.cwd, "spec");
     return resolveConfig({ spec: path.basename(at) }, path.dirname(at), null);
   }
-  const module = (await import(pathToFileURL(found).href)) as { default?: PomConfig };
+  let module: { default?: PomConfig };
+  try {
+    module = (await import(pathToFileURL(found).href)) as { default?: PomConfig };
+  } catch (error) {
+    // A `.ts` config in a CommonJS project: Node reads its `export` as a syntax error.
+    if (found.endsWith(".ts") && error instanceof SyntaxError) {
+      throw new Error(
+        `${path.relative(options.cwd, found) || found} is read as CommonJS here (its package.json isn't "type": "module"): rename it pom.config.mts.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   const raw = module.default ?? {};
   const dir = path.dirname(found);
   // A spec named on the command line wins over the config's.

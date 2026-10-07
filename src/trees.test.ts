@@ -100,6 +100,41 @@ test("a page's trees: what every width shows, then what only one does; a person'
   assert.deepEqual(checkSpec(readSpec(dir)).problems, []);
 });
 
+test("siblings alike, two paragraphs with no name, stay two in a page's tree", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pom-trees-"));
+  const form = inventory(
+    readOutline(`- main:
+  - button "Create account"
+  - paragraph:
+    - link "Terms":
+      - /url: /terms
+    - link "Privacy Policy":
+      - /url: /privacy
+  - paragraph:
+    - link "Already have an account? Sign in":
+      - /url: /sign-in`),
+    true,
+  );
+  writePage(dir, [
+    { combo: { role: "visitor", state: null, width: "desktop" }, tree: form },
+    { combo: { role: "visitor", state: null, width: "phone" }, tree: form },
+  ]);
+  assert.equal(
+    readFileSync(path.join(dir, "page.tree.yml"), "utf8"),
+    [
+      GENERATED,
+      "- main:",
+      '  - button "Create account"',
+      "  - paragraph:",
+      '    - link "Terms"',
+      '    - link "Privacy Policy"',
+      "  - paragraph:",
+      '    - link "Already have an account? Sign in"',
+      "",
+    ].join("\n"),
+  );
+});
+
 test("what every variation shows is the page's; what only one does, that variation's", () => {
   const chains = (...names: Array<string>) => new Set(names);
   const out = split([

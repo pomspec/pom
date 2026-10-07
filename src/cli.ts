@@ -21,7 +21,7 @@ import { rendererOf, report, type ShotsResult, shots } from "./shots.ts";
 import { snapshot, waysIn } from "./snapshot.ts";
 import { defaultBase, filesAt, gitRoot, mergeBase, sourceAt, takenNow } from "./source.ts";
 import { picture } from "./terminal.ts";
-import { runsOf } from "./videos.ts";
+import { runsIn, runsOf } from "./videos.ts";
 import { defaultProject, SERVICE_URL, serviceOf } from "./service.ts";
 import { readSpec, type Spec } from "./spec.ts";
 
@@ -53,7 +53,7 @@ import { readSpec, type Spec } from "./spec.ts";
 //            [--base-dir <dir>]        the journeys played on a pull request's head and
 //                                      base, each recorded for pomspec, into .pom/runs/<run>
 //                                      for pom upload (play.ts; --help says the rest)
-// pom upload [spec] --run <id> [--project <slug> | --repo <owner/name>] [--pull <n>]
+// pom upload [spec] [--run <id>] [--project <slug> | --repo <owner/name>] [--pull <n>]
 //            [--job <id>] [--feature-commit <sha>] [--replace]
 //                                      a run played here (.pom/runs/<id>) onto pomspec,
 //                                      into its project (by its address, or by the GitHub
@@ -123,7 +123,7 @@ const USAGE = [
   "pom map [spec] [--base-url <url>]",
   "pom pr [spec] [--base <ref>] [--dry-run] [--force]",
   "pom videos [spec] [--head-url <url>] [--base-url <url>] [--start <command> --ready-url <url>] [--base-dir <dir>] (--help)",
-  "pom upload [spec] --run <id> [--project <slug> | --repo <owner/name>] [--pull <n>] [--job <id>] [--feature-commit <sha>] [--replace] [--service <url>]",
+  "pom upload [spec] [--run <id>] [--project <slug> | --repo <owner/name>] [--pull <n>] [--job <id>] [--feature-commit <sha>] [--replace] [--service <url>]",
 ];
 
 // `pom --help`, or a command's own line: asked for, so on stdout, and no failure.
@@ -477,10 +477,8 @@ switch (command) {
     process.exit(0);
   }
   case "upload": {
-    const run =
-      typeof values.run === "string" && values.run
-        ? values.run
-        : fail("pom upload needs --run <id>, a folder in .pom/runs.");
+    // The run named, else the newest beside the spec (found below, with the runs).
+    const runNamed = typeof values.run === "string" && values.run ? values.run : null;
     if (values.project !== undefined && values.repo !== undefined)
       fail("pom upload takes --project <slug> or --repo <owner/name>, not both.");
     if (values.repo !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(values.repo))
@@ -511,6 +509,13 @@ switch (command) {
           `No runs to upload in ${path.relative(process.cwd(), config.spec) || "."}: run pom videos first.`,
         );
     }
+    const run =
+      runNamed ??
+      runsIn(runsOf(spec))[0]?.run ??
+      fail(
+        `No runs to upload in ${path.relative(process.cwd(), spec) || "."}: run pom videos first.`,
+      );
+    if (!runNamed) console.error(`Uploading run ${run}, the newest (--run <id> names another).`);
     // Where it goes: as named, else, for a spec with no GitHub remote, its name's project.
     const project =
       values.project ??

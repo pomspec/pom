@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { NAMES } from "./config.ts";
 
 // `pom init`: a repository made ready for pom. Its config, its spec folder, pom's own
 // folder (ignored by itself), and with `--commit` the attributes that keep committed
@@ -36,6 +37,21 @@ ${fields.join("\n")}
 
 export type Initialized = Readonly<{ config: string; created: ReadonlyArray<string> }>;
 
+/** Whether Node reads `dir`'s `.ts` files as ES modules: its nearest package.json says so. */
+function isModule(dir: string): boolean {
+  for (let at = path.resolve(dir); ; at = path.dirname(at)) {
+    const file = path.join(at, "package.json");
+    if (existsSync(file)) {
+      try {
+        return (JSON.parse(readFileSync(file, "utf8")) as { type?: string }).type === "module";
+      } catch {
+        return false;
+      }
+    }
+    if (path.dirname(at) === at) return false;
+  }
+}
+
 export function init(input: {
   agent: string | null;
   baseURL: string | null;
@@ -43,7 +59,10 @@ export function init(input: {
   dir: string;
 }): Initialized {
   const created: Array<string> = [];
-  const config = path.join(input.dir, "pom.config.ts");
+  // A config the folder has already, else `.mts` where `.ts` would be read as CommonJS.
+  const config =
+    NAMES.map((name) => path.join(input.dir, name)).find((file) => existsSync(file)) ??
+    path.join(input.dir, isModule(input.dir) ? "pom.config.ts" : "pom.config.mts");
   if (!existsSync(config)) {
     writeFileSync(config, configText(input));
     created.push(config);

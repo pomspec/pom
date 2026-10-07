@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["src/view"]
+}

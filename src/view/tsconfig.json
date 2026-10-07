@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["node"]
+  },
+  "include": ["model.ts", "frame.ts", "director.ts"]
+}

@@ -1,0 +1,255 @@
+# pom's GitHub Action: a pull request's journeys played on its head and its base, on the
+# repository's own Actions minutes, recorded (pom videos) and sent to pomspec (pom upload),
+# which writes the pull request's comment and its "pomspec" check from them. It holds
+# no key of pomspec's GitHub App, only a runner token, and plays only what is
+# committed: the spec is written by whoever writes journeys.
+#
+# Each side is an address, the first of: its input (head-url, base-url: a preview, a
+# staging site), for the head only GitHub's successful deployment of its commit (as
+# Vercel and others post them) that is not production, or the start command run in its
+# own checkout (the base's, a worktree), one side at a time. Without an address or a way
+# to start it, the base is not played. Production is never played: journeys sign up,
+# make and change data. A run again for the same commit (a re-run, a later deployment)
+# replaces its videos.
+#
+# The project has pomspec and @playwright/test among its devDependencies (pom init's
+# way). Each role's sign-in reads its credentials from the environment (secrets passed
+# as env); a secret's value shows as dots in the videos.
+
+name: pomspec
+description: Play a pull request's journeys on its head and its base, record them, and send the videos to pomspec.
+author: pomspec
+branding:
+  icon: video
+  color: blue
+
+inputs:
+  service-url:
+    description: pomspec's address.
+    default: https://pomspec.com
+  runner-token:
+    description: A runner token, created in pomspec under Settings → Runners and kept as a repository secret.
+    required: true
+  spec:
+    description: The spec's folder, from the repository's root (pom.config.ts beside it).
+    default: spec
+  head-url:
+    description: Where the pull request's app is running. If empty, GitHub's latest successful deployment of its head that isn't production, else wherever start runs it.
+    required: false
+  base-url:
+    description: Where the base's app is running. If empty, start runs it in a checkout of the base.
+    required: false
+  start:
+    description: A command that starts the app (npm run dev), run in each side's checkout in turn.
+    required: false
+  ready-url:
+    description: Where the started app answers once it's up. Its journeys are played there.
+    required: false
+  project:
+    description: The pomspec project the videos go to, by its address, when this repository isn't linked to one. Those videos have no pull request. If empty, the project this repository is linked to.
+    required: false
+  node-version:
+    description: The Node.js pom runs on (22.18 or later).
+    default: "24"
+
+outputs:
+  run:
+    description: The run's id, as pom videos kept it.
+    value: ${{ steps.videos.outputs.run }}
+  url:
+    description: The run's page on pomspec.
+    value: ${{ steps.upload.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: A runner token
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.runner-token }}
+      run: |
+        if [ -z "$TOKEN" ]; then
+          echo "::error::No runner token: create one in pomspec under Settings → Runners, and add it as a repository secret. A pull request from a fork doesn't get secrets."
+          exit 1
+        fi
+
+    - name: Check out the pull request's head
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        # The project is installed as its lockfile says, below: no cache of setup-node's
+        # own, which GitHub advises against where secrets are at hand.
+        package-manager-cache: false
+
+    - name: The pull request, and where each side runs
+      id: where
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        PULL: ${{ github.event.pull_request.number }}
+        PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PULL_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        HEAD_URL: ${{ inputs.head-url }}
+        BASE_URL: ${{ inputs.base-url }}
+        # A production deployment is never played: its journeys would change real data.
+        DEPLOYED: ${{ github.event.deployment_status.state == 'success' && !github.event.deployment.production_environment && (github.event.deployment_status.environment_url || github.event.deployment_status.target_url) || '' }}
+      run: |
+        # The latest successful deployment of a commit that is not production, as GitHub
+        # has it, a transient one (a preview) first: its address.
+        deployed() {
+          local id url
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$1&per_page=10" \
+            --jq '[.[] | select(.production_environment != true and ((.environment // "") | ascii_downcase) != "production")] | sort_by(.transient_environment != true) | .[].id' 2>/dev/null); do
+            url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" \
+              --jq '.[0] | select(.state == "success") | (.environment_url // .target_url // empty)' 2>/dev/null)
+            if [ -n "$url" ]; then echo "$url"; return; fi
+          done
+        }
+        pull="$PULL" base_sha="$PULL_BASE_SHA" base_ref="$PULL_BASE_REF"
+        if [ -z "$pull" ]; then
+          # A deployment or a push: the open pull request at this commit, if there is one.
+          read -r pull base_sha base_ref < <(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" \
+            --jq '[.[] | select(.state == "open")][0] // empty | "\(.number) \(.base.sha) \(.base.ref)"' 2>/dev/null) || true
+        fi
+        head="$HEAD_URL"
+        if [ -z "$head" ]; then head="$DEPLOYED"; fi
+        if [ -z "$head" ]; then head=$(deployed "$HEAD_SHA"); fi
+        # The base plays at its address, or is started in a checkout of it, never at a
+        # deployment of its commit: the base branch's is often production's.
+        base="$BASE_URL"
+        {
+          echo "pull=$pull"
+          echo "head-sha=$HEAD_SHA"
+          echo "base-sha=$base_sha"
+          echo "base-ref=$base_ref"
+          echo "head-url=$head"
+          echo "base-url=$base"
+        } >> "$GITHUB_OUTPUT"
+        echo "Pull request: ${pull:-none}. Head: ${head:-started here}. Base: ${base:-${base_sha:+started from $base_sha}}"
+
+    - name: Install, as the lockfile says
+      id: install
+      shell: bash
+      env:
+        SPEC: ${{ inputs.spec }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/install.sh" "$GITHUB_WORKSPACE"
+        # pom and Playwright as the spec's project has them: in its folder or one above it.
+        bin() {
+          local dir
+          dir=$(cd "$(dirname "$SPEC")" && pwd)
+          while :; do
+            if [ -x "$dir/node_modules/.bin/$1" ]; then echo "$dir/node_modules/.bin/$1"; return 0; fi
+            if [ "$dir" = "$GITHUB_WORKSPACE" ] || [ "$dir" = / ]; then return 1; fi
+            dir=$(dirname "$dir")
+          done
+        }
+        pom=$(bin pom) || { echo "::error::pomspec isn't installed: add pomspec and @playwright/test to the project's devDependencies."; exit 1; }
+        playwright=$(bin playwright) || { echo "::error::Playwright isn't installed: add @playwright/test to the project's devDependencies."; exit 1; }
+        {
+          echo "pom=$pom"
+          echo "playwright=$playwright"
+          echo "playwright-version=$("$playwright" --version | awk '{ print $2 }')"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Keep Playwright's Chromium
+      id: browsers
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: pomspec-playwright-${{ runner.os }}-${{ steps.install.outputs.playwright-version }}
+
+    - name: Playwright's Chromium, and ffmpeg
+      shell: bash
+      env:
+        PLAYWRIGHT: ${{ steps.install.outputs.playwright }}
+        KEPT: ${{ steps.browsers.outputs.cache-hit }}
+      run: |
+        if [ "$KEPT" = true ]; then "$PLAYWRIGHT" install-deps chromium; else "$PLAYWRIGHT" install --with-deps chromium; fi
+        # ffmpeg makes each video's storyboard and still; without it they have none. It
+        # makes the pictures WebP too where it has libwebp (Ubuntu's); Homebrew's hasn't,
+        # so a Mac gets cwebp for them, else they go up as PNG, about 6 times larger.
+        if ! command -v ffmpeg >/dev/null; then
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          elif [ "$RUNNER_OS" = macOS ]; then brew install ffmpeg
+          fi
+        fi
+        if [ "$RUNNER_OS" = macOS ] && ! command -v cwebp >/dev/null; then brew install webp; fi
+
+    - name: Check out the base
+      id: base
+      if: steps.where.outputs.base-url == '' && steps.where.outputs.base-sha != ''
+      shell: bash
+      env:
+        BASE_SHA: ${{ steps.where.outputs.base-sha }}
+        SPEC: ${{ inputs.spec }}
+        START: ${{ inputs.start }}
+      run: |
+        # Started from its own checkout, by the start command or pom.config.ts's webServer.
+        if [ -z "$START" ] && ! grep -qs webServer "$(dirname "$SPEC")/pom.config.ts" "$SPEC/pom.config.ts"; then
+          echo "The base has no address and nothing starts it, so only the head is played."
+          exit 0
+        fi
+        dir="$RUNNER_TEMP/pomspec-base"
+        git fetch --no-tags --depth=1 origin "$BASE_SHA"
+        git worktree add --detach "$dir" "$BASE_SHA"
+        bash "$GITHUB_ACTION_PATH/install.sh" "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+    - name: Play and record the journeys
+      id: videos
+      shell: bash
+      env:
+        POM: ${{ steps.install.outputs.pom }}
+        SPEC: ${{ inputs.spec }}
+        HEAD_URL: ${{ steps.where.outputs.head-url }}
+        BASE_URL: ${{ steps.where.outputs.base-url }}
+        BASE_DIR: ${{ steps.base.outputs.dir }}
+        BASE_REF: ${{ steps.where.outputs.base-ref }}
+        START: ${{ inputs.start }}
+        READY_URL: ${{ inputs.ready-url }}
+      run: |
+        args=("$SPEC")
+        if [ -n "$HEAD_URL" ]; then args+=(--head-url "$HEAD_URL"); fi
+        if [ -n "$BASE_URL" ]; then args+=(--base-url "$BASE_URL"); fi
+        if [ -n "$BASE_DIR" ]; then args+=(--base-dir "$BASE_DIR"); fi
+        if [ -n "$START" ]; then args+=(--start "$START"); fi
+        if [ -n "$READY_URL" ]; then args+=(--ready-url "$READY_URL"); fi
+        if [ -n "$BASE_REF" ]; then args+=(--names "$BASE_REF,head"); fi
+        # Its run's id goes to this step's output "run".
+        "$POM" videos "${args[@]}"
+
+    - name: Send the videos to pomspec
+      id: upload
+      shell: bash
+      env:
+        POM: ${{ steps.install.outputs.pom }}
+        POM_RUNNER_TOKEN: ${{ inputs.runner-token }}
+        POM_SERVICE_URL: ${{ inputs.service-url }}
+        SPEC: ${{ inputs.spec }}
+        RUN: ${{ steps.videos.outputs.run }}
+        HEAD_SHA: ${{ steps.where.outputs.head-sha }}
+        PULL: ${{ steps.where.outputs.pull }}
+        PROJECT: ${{ inputs.project }}
+      run: |
+        # A run again for the same commit (a re-run, a later deployment) replaces its videos.
+        args=("$SPEC" --run "$RUN" --feature-commit "$HEAD_SHA" --replace)
+        if [ -n "$PROJECT" ]; then
+          args+=(--project "$PROJECT")
+        else
+          args+=(--repo "$GITHUB_REPOSITORY")
+          if [ -n "$PULL" ]; then args+=(--pull "$PULL"); fi
+        fi
+        # pom upload prints the run's page last, as its last line's last word ("On pomspec: <url>"),
+        # after anything else it says (a newer run of the pull request), shown in the log too.
+        out=$("$POM" upload "${args[@]}")
+        echo "$out"
+        line=$(tail -n 1 <<< "$out")
+        url=${line##* }
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "The videos on pomspec: $url" >> "$GITHUB_STEP_SUMMARY"

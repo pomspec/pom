@@ -1,0 +1,74 @@
+{
+  "name": "pomspec",
+  "version": "0.1.0",
+  "description": "Journeys in Gherkin, pictured and recorded: a spec of a web app that people read and watch, checked against its pages, compared in pull requests",
+  "homepage": "https://github.com/pomspec/pom#readme",
+  "bugs": "https://github.com/pomspec/pom/issues",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pomspec/pom.git"
+  },
+  "bin": {
+    "pom": "./src/cli.ts",
+    "pomspec": "./src/cli.ts"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./video": "./src/video.ts",
+    "./frame": "./src/view/director.ts",
+    "./types": "./src/types.ts"
+  },
+  "publishConfig": {
+    "bin": {
+      "pom": "./dist/cli.js",
+      "pomspec": "./dist/cli.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./video": {
+        "types": "./dist/video.d.ts",
+        "default": "./dist/video.js"
+      },
+      "./frame": {
+        "types": "./dist/view/director.d.ts",
+        "default": "./dist/view/director.js"
+      },
+      "./types": {
+        "types": "./dist/types.d.ts"
+      }
+    }
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { force: true, recursive: true })\" && tsc -p tsconfig.build.json && tsc -p src/view --noEmit false --declaration --rewriteRelativeImportExtensions --rootDir src --outDir dist && node --disable-warning=ExperimentalWarning -e \"const fs = require('node:fs'), { stripTypeScriptTypes } = require('node:module'); fs.writeFileSync('dist/view/frame.js', stripTypeScriptTypes(fs.readFileSync('src/view/frame.ts', 'utf8'), { mode: 'strip' }))\"",
+    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p src/view"
+  },
+  "dependencies": {
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.5.0",
+    "@types/pngjs": "^6.0.5",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.59"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

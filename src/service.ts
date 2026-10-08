@@ -12,6 +12,8 @@ import {
 import { availableParallelism, tmpdir } from "node:os";
 import path from "node:path";
 import pom from "../package.json" with { type: "json" };
+import { type Gif, makeGifs } from "./gif.ts";
+import { byMode, verdictOf } from "./video.ts";
 import {
   featureOf,
   type Found,
@@ -22,6 +24,7 @@ import {
   stillOf,
   videosIn,
 } from "./videos.ts";
+import type { Verdict } from "./view/model.ts";
 
 // pomspec's service, as a runner speaks to it. A runner hears which pull requests to
 // play (the `runnerJobs` subscription, over SSE, read as the kit's player reads a
@@ -47,6 +50,9 @@ export const VERSION: string = pom.version;
 
 /** A runner token, as Settings → Runners creates it. */
 export const RUNNER_TOKEN = /^pomr_[A-Za-z0-9_-]{43}$/;
+
+/** A workflow's token, as pomspec swaps GitHub's word for a workflow for one (oidc.ts). */
+export const WORKFLOW_TOKEN = /^pomg_[A-Za-z0-9_-]{1,1024}\.[A-Za-z0-9_-]{43}$/;
 
 /** A pull request to play at a commit: what the service hands a runner. */
 export type RunnerJob = Readonly<{
@@ -173,10 +179,12 @@ const MB = 1024 * 1024;
 /**
  * What the service takes, so a run over them is refused before anything is sent: so many
  * files, a video.json, any other file and the run so large; of what goes on the videos
- * branch, a file (`branch`) and all of them together (`branchRun`).
+ * branch, a file (`branch`), all of them together (`branchRun`) and how many
+ * (`branchFiles`).
  */
 export const LIMITS = {
   branch: 15 * MB,
+  branchFiles: 1000,
   branchRun: 150 * MB,
   files: 5000,
   json: 5 * MB,
@@ -211,6 +219,9 @@ type Local = Readonly<{ file: string; path: string; size: number }>;
 
 const TOKEN_REFUSED =
   "pomspec doesn't know this runner token: create another in Settings → Runners.";
+/** A workflow's token refused: it lasted its hours, or its repository was let go. */
+const WORKFLOW_REFUSED =
+  "pomspec no longer takes this workflow's token: it lasts two hours, and only while its repository is connected in Settings → GitHub. Run the workflow again.";
 
 /** Codes the service refuses for good with: asked again, it would refuse again. */
 const FINAL = new Set(["FORBIDDEN", "UNAUTHENTICATED", "forbidden", "not-found"]);
@@ -404,6 +415,10 @@ function filesOf(
     LIMITS.branchRun
   )
     throw new Error("The run's files for the videos branch are over pomspec's limit of 150 MB.");
+  if (publish.length > LIMITS.branchFiles)
+    throw new Error(
+      `The run's files for the videos branch are over pomspec's limit of ${LIMITS.branchFiles.toLocaleString("en")} files.`,
+    );
   if (files.reduce((sum, f) => sum + f.size, 0) > LIMITS.run)
     throw new Error("The run is over pomspec's limit of 2 GB.");
   return files;
@@ -590,8 +605,10 @@ export function serviceOf({
   token: string;
   url: string;
 }>): Service {
-  if (!RUNNER_TOKEN.test(token))
+  if (!RUNNER_TOKEN.test(token) && !WORKFLOW_TOKEN.test(token))
     throw new Error("That isn't a runner token (pomr_…): create one in Settings → Runners.");
+  /** What pom says when pomspec refuses the token, whatever pomspec says with it. */
+  const tokenRefused = WORKFLOW_TOKEN.test(token) ? WORKFLOW_REFUSED : TOKEN_REFUSED;
   const address = URL.parse(url);
   if (address?.protocol !== "http:" && address?.protocol !== "https:")
     throw new Error(
@@ -656,7 +673,7 @@ export function serviceOf({
     // A token revoked or unknown, whatever the service says with it.
     if (response.status === 401) {
       await response.body?.cancel().catch(() => {});
-      throw new ServiceError(TOKEN_REFUSED, null, 401);
+      throw new ServiceError(tokenRefused, null, 401);
     }
     const payload = (await response.json().catch(() => null)) as Payload<T> | null;
     const refused = refusal(payload, response.status);
@@ -687,7 +704,7 @@ export function serviceOf({
       }
       if (response?.status === 401) {
         await response.body?.cancel().catch(() => {});
-        throw new ServiceError(TOKEN_REFUSED, null, 401);
+        throw new ServiceError(tokenRefused, null, 401);
       }
       if (response && !response.ok && !passing(response.status)) {
         const payload = (await response.json().catch(() => null)) as Payload<unknown> | null;
@@ -751,7 +768,7 @@ export function serviceOf({
     if (response.ok) return;
     throw new ServiceError(
       response.status === 401
-        ? TOKEN_REFUSED
+        ? tokenRefused
         : response.status === 404
           ? "No run of yours is uploading under that id."
           : (said ?? `pomspec refused ${file.path} (${response.status}).`),
@@ -929,4 +946,273 @@ export function serviceOf({
     uploadRun,
     url: base,
   };
+}
+
+// ── what a pull request's comment shows ──────────────────────────────────
+
+/** A file for the videos branch: on this machine, its key in the run, its path there. */
+export type Publish = NonNullable<Upload["publish"]>[number];
+
+/** A file of a run that its pull request's comment shows, by its path in the run. */
+export type Shown = Readonly<{
+  at: string;
+  file: string;
+  /** For a GIF, which may not be made yet: the video it is drawn from, as gif.ts takes it. */
+  gif: Omit<Gif, "dir"> | null;
+}>;
+
+/** The verdicts the comment shows a journey for, in its order (review.ts: kindOf, ORDER). */
+const LOOKS: ReadonlyArray<Verdict["kind"]> = ["broken", "failed", "new", "changed", "unplayed"];
+/** What GitHub shows inline, as the videos branch takes it. */
+const INLINE = /\.(gif|jpg|mp4|png)$/;
+
+/**
+ * A picture's step, from its file name, whatever its number and kind, as the comment
+ * pairs two sides' pictures (review.ts: stepOf): 05-click-login.page.forgot-password.png
+ * → login.page.forgot-password.
+ */
+const stepOf = (picture: string) =>
+  picture.replace(/^\d+-[a-z]+-/, "").replace(/\.(png|webp)$/, "");
+
+/** A video's picture of the step another picture is of: one of its checks', else its chapters'. */
+const sameStep = (video: Found["video"], picture: string) =>
+  [...video.checks, ...video.chapters].find(
+    (c) => c.picture && stepOf(c.picture) === stepOf(picture),
+  )?.picture;
+
+const isFile = (file: string) => existsSync(file) && statSync(file).isFile();
+
+/**
+ * What a pull request's comment shows of a run, as pomspec's service writes it
+ * (apps/service/src/github/review.ts: reviewOf, and shownBy for where it finds each): for
+ * each journey whose verdict needs a look (broken, failed, new, changed, played on one
+ * side alone), in the comment's order, the GIF of its video (this pull request's; main's,
+ * of one not played after), where it stopped before beside this pull request's picture of
+ * the same step, each screen that looks different beside this pull request's picture of
+ * the same step, and each chapter's picture as it ends. Pictures the run's folders hold;
+ * a GIF whether it is made yet or not.
+ */
+export function shownIn(dir: string, videos: ReadonlyArray<Found>): Array<Shown> {
+  // A run that played both sides compares them, as the service reads it.
+  const compared =
+    videos.some((one) => one.target === "head") && videos.some((one) => one.target === "base");
+  const journeys = new Map<string, Array<Found & { mode: string }>>();
+  for (const one of videos) {
+    const file = one.video.journey.file;
+    const mode = one.video.mode ?? path.basename(one.dir);
+    journeys.set(file, [...(journeys.get(file) ?? []), { ...one, mode }]);
+  }
+  /** A side's video the comment shows: the one a person watches first (visual). */
+  const on = (takes: ReadonlyArray<Found & { mode: string }>, target: string) =>
+    takes.filter((one) => one.target === target).sort(byMode)[0] ?? null;
+  const rows = [...journeys.values()]
+    .flatMap((takes) => {
+      const verdict = verdictOf(takes, compared);
+      const title = [...takes].sort(byMode)[0]!.video.journey.title;
+      return LOOKS.includes(verdict.kind) ? [{ takes, title, verdict }] : [];
+    })
+    .sort(
+      (a, b) =>
+        LOOKS.indexOf(a.verdict.kind) - LOOKS.indexOf(b.verdict.kind) ||
+        a.title.localeCompare(b.title),
+    );
+
+  const shown: Array<Shown> = [];
+  const add = (of: Found, picture: string | null | undefined, gif: Shown["gif"] = null) => {
+    // A name as a run's are, of a kind GitHub shows: never a path out of its folder.
+    if (!picture || picture.startsWith(".") || !SEGMENT.test(picture) || !INLINE.test(picture))
+      return;
+    const file = path.join(of.dir, picture);
+    const at = path.relative(dir, file).split(path.sep).join("/");
+    if (shown.some((one) => one.at === at) || (!gif && !isFile(file))) return;
+    shown.push({ at, file, gif });
+  };
+  for (const { takes, verdict } of rows) {
+    const base = compared ? on(takes, "base") : null;
+    // Not played after: main's video (Before) is the one there is.
+    const head =
+      on(takes, compared ? "head" : (takes[0]?.target ?? "head")) ??
+      (verdict.kind === "unplayed" ? base : null);
+    if (!head) continue;
+    add(head, "journey.gif", {
+      // A compared run's Before video is measured against this pull request.
+      reference: compared && head.target === "base" ? "this pull request" : "the reference",
+      video: head.video,
+    });
+    const other = base && base !== head ? base : null;
+    const stop =
+      verdict.kind === "new" ? undefined : other?.video.checks.find((c) => c.verdict === "missing");
+    if (other && stop?.picture) {
+      add(other, stop.picture);
+      const picture = stop.picture;
+      add(
+        head,
+        head.video.checks.find((c) => c.picture && stepOf(c.picture) === stepOf(picture))?.picture,
+      );
+    }
+    if (other && verdict.kind === "changed")
+      for (const note of verdict.notes) {
+        const differs = other.video.checks.find(
+          (c) => c.at === note.at && c.verdict === "differs" && c.picture,
+        );
+        const same = differs?.picture ? sameStep(head.video, differs.picture) : undefined;
+        if (!same) continue;
+        add(other, differs!.picture);
+        add(head, same);
+      }
+    for (const chapter of head.video.chapters) add(head, chapter.picture);
+  }
+  return shown;
+}
+
+/** “a”, “a and b”, “a, b and c”. */
+const listed = (items: ReadonlyArray<string>) =>
+  items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
+const inMb = (bytes: number) => `${Number((bytes / MB).toFixed(1))} MB`;
+
+/** The run's own files, as filesOf sends them (each video's still counted, drawn yet or not): how many, how large. */
+function ownOf(videos: ReadonlyArray<Found>) {
+  let count = 0;
+  let bytes = 0;
+  for (const { dir } of videos) {
+    const names = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && VIDEO_FILE.test(entry.name))
+      .map((entry) => entry.name);
+    count += names.length + (names.includes("still.jpg") ? 0 : 1);
+    for (const name of names) bytes += statSync(path.join(dir, name)).size;
+  }
+  return { bytes, count };
+}
+
+/**
+ * What goes on the videos branch for a pull request's comment (shownIn): each file there
+ * at `pr-<n>/<run>/<its path in the run>`, where the service's comment finds it (a
+ * picture uploaded as WebP, by its PNG of the same name: the run on disk keeps its PNGs),
+ * and uploaded under publish/. Within pomspec's limits (`limits`, the service's), said in
+ * one line, naming only those that did, when they leave anything out: a file over the
+ * limit for one; then, while together they are over the limit for a run's (or the run's
+ * own files leave less room), its GIFs, the largest first, then its pictures, the
+ * comment's last first; then, past so many files, the comment's last.
+ */
+export function publishOf(
+  dir: string,
+  videos: ReadonlyArray<Found>,
+  {
+    limits = LIMITS,
+    pull,
+    run,
+    say,
+  }: Readonly<{
+    limits?: Readonly<Record<"branch" | "branchFiles" | "branchRun" | "files" | "run", number>>;
+    pull: number;
+    run: string;
+    say?: (line: string) => void;
+  }>,
+): Array<Publish> {
+  if (!Number.isSafeInteger(pull) || pull < 1 || !SEGMENT.test(run)) return [];
+  const files = shownIn(dir, videos).flatMap((one) =>
+    isFile(one.file) ? [{ ...one, size: statSync(one.file).size }] : [],
+  );
+  const left = new Set<(typeof files)[number]>();
+  // The limits that left something out, said alone: the videos branch's (a file, in all,
+  // how many), else a run's, when its own files leave less room than the branch has.
+  const branch = new Set<string>();
+  const ofRun = new Set<string>();
+  const leave = (one: (typeof files)[number], over: Set<string>, limit: string) => {
+    left.add(one);
+    over.add(limit);
+  };
+  const kept: typeof files = [];
+  for (const one of files) {
+    if (one.size > limits.branch) leave(one, branch, `${inMb(limits.branch)} a file`);
+    else kept.push(one);
+  }
+  const own = ownOf(videos);
+  const room = Math.min(limits.branchRun, limits.run - own.bytes);
+  const [roomOf, roomIs] =
+    room === limits.branchRun
+      ? [branch, `${inMb(limits.branchRun)} in all`]
+      : [ofRun, inMb(limits.run)];
+  let total = kept.reduce((sum, one) => sum + one.size, 0);
+  while (kept.length && total > room) {
+    const gif = kept
+      .filter((one) => one.gif)
+      .reduce<(typeof kept)[number] | null>((a, b) => (a && a.size >= b.size ? a : b), null);
+    const drop = gif ?? kept.at(-1)!;
+    kept.splice(kept.indexOf(drop), 1);
+    total -= drop.size;
+    leave(drop, roomOf, roomIs);
+  }
+  const most = Math.max(0, Math.min(limits.branchFiles, limits.files - own.count));
+  const [countOf, countIs] =
+    most === limits.branchFiles
+      ? [branch, `${limits.branchFiles.toLocaleString("en")} files`]
+      : [ofRun, `${limits.files.toLocaleString("en")} files`];
+  while (kept.length > most) leave(kept.pop()!, countOf, countIs);
+  /** “pomspec's limit for … (a, b)”, “pomspec's limits for … (a, b)”. */
+  const limitsOf = (parts: Set<string>, of: string) =>
+    parts.size
+      ? [`pomspec's limit${parts.size > 1 ? "s" : ""} for ${of} (${[...parts].join(", ")})`]
+      : [];
+  // What was left out, in the comment's order.
+  const gifs = files.flatMap((one) =>
+    left.has(one) && one.gif ? [`“${one.gif.video.journey.title}”`] : [],
+  );
+  const pictures = left.size - gifs.length;
+  if (left.size)
+    say?.(
+      `Left out of the pull request's comment, over ${[
+        ...limitsOf(branch, "the videos branch"),
+        ...limitsOf(ofRun, "a run, its videos included"),
+      ].join(" and ")}: ${[
+        gifs.length > 3
+          ? `${gifs.length} GIFs`
+          : gifs.length
+            ? `the GIF${gifs.length > 1 ? "s" : ""} of ${listed(gifs)}`
+            : "",
+        pictures > 1 ? `${pictures} pictures` : pictures ? "a picture" : "",
+      ]
+        .filter(Boolean)
+        .join(", and ")}.`,
+    );
+  return kept.map((one, n) => {
+    // Its key, one folder deep: numbered, so no two are alike, and named as it is.
+    const name = `${n + 1}-${path.posix.basename(one.at)}`;
+    return {
+      file: one.file,
+      key: `publish/${SEGMENT.test(name) ? name : `${n + 1}${path.posix.extname(one.at)}`}`,
+      path: `pr-${pull}/${run}/${one.at}`,
+    };
+  });
+}
+
+/**
+ * What `pom upload --pull <n>` puts on the videos branch for its pull request's comment:
+ * the GIFs the comment shows, made first beside their recordings with the spec's own
+ * Playwright (gif.ts), then publishOf. What can't be made is said in a line, and the
+ * upload goes on without it.
+ */
+export async function publishFor({
+  pull,
+  run,
+  say,
+  spec,
+}: Readonly<{
+  pull: number;
+  /** The run's id: its folder in the spec's runs. */
+  run: string;
+  say?: (line: string) => void;
+  /** The folder whose `.pom/runs` holds it. */
+  spec: string;
+}>): Promise<Array<Publish>> {
+  const dir = path.join(runsOf(spec), run);
+  // No such run: the upload says so.
+  if (!existsSync(dir)) return [];
+  const videos = videosIn(dir);
+  const gifs = shownIn(dir, videos).flatMap(({ file, gif }) =>
+    gif ? [{ ...gif, dir: path.dirname(file) }] : [],
+  );
+  if (gifs.length) await makeGifs(gifs, { from: spec, say: (line) => say?.(line) });
+  return publishOf(dir, videos, { pull, run, say });
 }

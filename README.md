@@ -22,16 +22,24 @@ in your pull request — before and after, side by side, with the video playing 
 ## Start
 
 ```sh
-npm install -D pomspec @playwright/test
+npm install -D -E pomspec @playwright/test
 npx playwright install chromium
 npx pomspec init http://localhost:3000
 ```
 
 `pom init` writes `pom.config.ts` (`pom.config.mts` where your package.json isn't
-`"type": "module"`) and `spec/`, then asks which agent should write your
-journeys (Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode or pi). It runs that
-agent's own command, signed in as you, on your machine: pom never signs in anywhere
-itself. Then it maps your app: every page, pictured, and the ones no journey visits yet.
+`"type": "module"`) and `spec/`. In a repository on GitHub (its remote there, or a
+`.github` folder), it also writes `.github/workflows/pomspec.yml` at the repository's
+root: pom's Action on every pull request (On GitHub Actions, below), starting your app
+with your package.json's `dev` script and playing it at the address you gave `pom init`,
+or with those lines left for you to fill in. A workflow already there is left as it is.
+Then it asks which agent should write your journeys (Claude Code, Codex, Gemini CLI,
+Copilot CLI, OpenCode or pi). It runs that agent's own command, signed in as you, on
+your machine: pom never signs in anywhere itself. Then it maps your app: every page,
+pictured, and the ones no journey visits yet, and says what's next: commit what it
+wrote, connect GitHub in pomspec (Settings → GitHub), and open a pull request. Not on
+GitHub yet? Once you are, run `pom init` with your app's address again: it adds the
+workflow.
 
 ## Every day
 
@@ -92,6 +100,10 @@ and pictures, and each journey's `.feature`, then prints the run's page, last
 write it (Ubuntu's can, Homebrew's can't) or cwebp is installed (`brew install webp`,
 which the Action does on a Mac), else as PNG, and pom says so; the run on disk keeps its
 PNGs.
+With `--pull`, pom first draws the GIF of each video the pull request's comment shows,
+with ffmpeg and the project's own `@playwright/test` Chromium (without either it says so
+and uploads without them), and puts them and the comment's pictures on the repository's
+videos branch.
 A project with no GitHub repository takes `--project <slug>` in place of `--repo`, the
 default for a spec with no GitHub remote (its name's project); its runs are of no pull
 request.
@@ -102,13 +114,14 @@ calls it.
 ## On GitHub Actions
 
 pom's Action plays each pull request on your repository's own Actions minutes, records it
-and uploads it. pomspec then writes the pull request's comment and its check. Add a
-runner token as the repository secret `POMSPEC_RUNNER_TOKEN`, and this as
-`.github/workflows/pomspec.yml` (in pomspec, Settings → Runners has it ready to paste):
+and uploads it. pomspec then writes the pull request's comment and its check. Connect the
+repository in pomspec (Settings → GitHub), and add this as
+`.github/workflows/pomspec.yml` (`pom init` writes it, and in pomspec, Settings → Runners
+has it ready to paste):
 
 ```yaml
 on: pull_request
-permissions: { contents: read, deployments: read, pull-requests: read }
+permissions: { contents: read, deployments: read, pull-requests: read, id-token: write }
 jobs:
   videos:
     if: github.actor != 'dependabot[bot]'
@@ -117,15 +130,25 @@ jobs:
       group: pomspec-${{ github.event.pull_request.head.sha || github.sha }}
       cancel-in-progress: true
     steps:
-      - uses: pomspec/pom/action@v0
+      - uses: pomspec/pom/action@v0.1.2
         with:
-          runner-token: ${{ secrets.POMSPEC_RUNNER_TOKEN }}
           start: npm run dev
           ready-url: http://localhost:3000
         env:
           POM_OWNER_EMAIL: ${{ secrets.POM_OWNER_EMAIL }}
           POM_OWNER_PASSWORD: ${{ secrets.POM_OWNER_PASSWORD }}
 ```
+
+The Action and pomspec are released together, at one number: `pomspec/pom/action@v0.1.2`
+is made for `pomspec@0.1.2`. `pom init` pins the Action at the pomspec you installed, which
+`-E` (Start, above) saved at its exact number; when you update one, update the other with
+it. If they differ, the Action warns, says which to raise, and plays all the same.
+
+There's no token to create and no secret to keep: with `id-token: write`, GitHub vouches
+for the workflow, and pomspec lets it upload to that repository and the project linked to
+it, for two hours at a time. Without it, the Action takes a runner token instead: create
+one in Settings → Runners, keep it as the repository secret `POMSPEC_RUNNER_TOKEN`, and
+pass it as `runner-token: ${{ secrets.POMSPEC_RUNNER_TOKEN }}`.
 
 The head plays at `head-url`, else at GitHub's latest successful deployment of its
 commit that isn't production, else wherever `start` runs it. The base plays at
@@ -139,10 +162,11 @@ deployment) replaces its videos. The Action checks out the head itself, installs
 lockfile says (pnpm, yarn or npm), keeps Playwright's Chromium between runs, and plays
 only what's committed. `spec` is the spec's folder (`spec` by default), and the project
 needs `pomspec` and `@playwright/test` in its devDependencies. `project` sends the videos
-to a pomspec project of yours instead of the one the repository is linked to. Each role
-signs in as its `signIn` module says, with its credentials passed as env from the
-repository's secrets. A pull request from a fork doesn't get secrets, so it can't be
-played, and the workflow from Settings → Runners skips it.
+to a pomspec project of yours instead of the one the repository is linked to, with a
+runner token: GitHub's word lets a workflow upload to its own repository's project alone.
+Each role signs in as its `signIn` module says, with its credentials passed as env from
+the repository's secrets. A pull request from a fork gets no ID token and no secrets, so
+it can't be played, and the workflow from Settings → Runners skips it.
 
 ## Privacy
 

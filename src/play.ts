@@ -275,12 +275,13 @@ function sidesOf(values: Values, config: Config): Record<Side, Where | null> {
     const root =
       gitRoot(config.dir) ?? failWith("pom videos starts the base only in a git repository");
     const checkout = path.resolve(values["base-dir"]);
-    const start =
-      startIn(path.join(checkout, path.relative(root, real(config.dir)))) ??
-      failWith(
-        "pom videos starts the base's app with --start <command> (and --ready-url), or pom.config.ts's webServer",
+    // Nothing starts it: the run is the head's alone, as with no base at all.
+    const start = startIn(path.join(checkout, path.relative(root, real(config.dir))));
+    if (start) base = { start, url: start.url };
+    else
+      console.error(
+        "The base has no address and nothing starts it (--start <command> with --ready-url, or pom.config.ts's webServer), so only the head is played.",
       );
-    base = { start, url: start.url };
   }
   return { base, head };
 }

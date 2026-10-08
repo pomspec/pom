@@ -518,9 +518,12 @@ export type VideoBase = Readonly<{ project: string }> | Pick<VideoRepo, "name" |
 /** A base, and where the spec is in the product's code (`apps/notes/spec/`): what a blob address names. */
 export type VideoPlace = VideoBase & Readonly<{ prefix: string }>;
 
+/** A GitHub owner's page, its connected repositories: `/github/<owner>`. */
+export const ownerAddress = (owner: string) => `/github/${segment(owner)}`;
+
 /** A GitHub repository's page: `/github/<owner>/<repo>`. */
 export const repoAddress = (repo: Pick<VideoRepo, "name" | "owner">) =>
-  `/github/${segment(repo.owner)}/${segment(repo.name)}`;
+  `${ownerAddress(repo.owner)}/${segment(repo.name)}`;
 
 /** A project's page: `/<project>`. */
 export const projectAddress = (slug: string) => `/${segment(slug)}`;

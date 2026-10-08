@@ -1,6 +1,6 @@
 {
   "name": "pomspec",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Journeys in Gherkin, pictured and recorded: a spec of a web app that people read and watch, checked against its pages, compared in pull requests",
   "homepage": "https://github.com/pomspec/pom#readme",
   "bugs": "https://github.com/pomspec/pom/issues",
@@ -24,7 +24,8 @@
     ".": "./src/index.ts",
     "./video": "./src/video.ts",
     "./frame": "./src/view/director.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "bin": {

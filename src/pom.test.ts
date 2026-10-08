@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { parse } from "yaml";
 import { checkSpec } from "./check.ts";
 import { generate } from "./generate.ts";
 import { specIndex } from "./indexer.ts";
@@ -423,4 +425,81 @@ test("a variation file names a width, a role or a state the spec has", () => {
       ),
     /"admin" is no width, role or state of this spec/,
   );
+});
+
+/** A file of pom's own, beside src/: its package.json, README, Action. */
+const own = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+
+test("the README names pom's Action and pomspec at this pom's own number: a release can't leave it behind", () => {
+  const { version } = JSON.parse(own("package.json")) as { version: string };
+  const readme = own("README.md");
+  const actions = [...readme.matchAll(/pomspec\/pom\/action@([^\s`]+)/g)].map((one) => one[1]);
+  const packages = [...readme.matchAll(/\bpomspec@([^\s`]+)/g)].map((one) => one[1]);
+  assert.ok(actions.length > 0, "the README's workflow names pom's Action");
+  assert.deepEqual(new Set(actions), new Set([`v${version}`]));
+  assert.deepEqual(new Set(packages), new Set([version]));
+});
+
+test("pom's Action says when its number and the project's pomspec differ, and plays all the same", () => {
+  const { steps } = (
+    parse(own("action/action.yml")) as {
+      runs: {
+        steps: ReadonlyArray<{
+          id?: string;
+          name?: string;
+          run?: string;
+          env?: Record<string, string>;
+        }>;
+      };
+    }
+  ).runs;
+  const warns = steps.findIndex((step) => step.name === "The Action and pomspec, at one number");
+  const script = steps[warns]?.run;
+  assert.ok(script);
+  // The pom it reads beside is the one install found, after install found it: without
+  // it, the step would say nothing in every run, whatever the numbers.
+  const install = steps.findIndex((step) => step.id === "install");
+  assert.ok(install >= 0 && warns > install);
+  assert.equal(steps[warns]?.env?.POM, "${{ steps.install.outputs.pom }}");
+  // pom's public repository at a tag (action/ beside its package.json), a copy of the
+  // Action kept in a project's own repository, and a project with pomspec installed.
+  const root = spec({
+    "pom/package.json": JSON.stringify({ name: "pomspec", version: "0.1.3" }),
+    "pom/action/action.yml": "",
+    "kept/package.json": JSON.stringify({ name: "acme", version: "2.0.0" }),
+    "kept/action/action.yml": "",
+    "app/node_modules/.bin/pom": "",
+  });
+  // What the step prints, with the Action at `at` and the project's pomspec at `version`;
+  // a run it failed would throw.
+  const said = (at: string, version: string) => {
+    mkdirSync(path.join(root, "app/node_modules/pomspec"), { recursive: true });
+    writeFileSync(
+      path.join(root, "app/node_modules/pomspec/package.json"),
+      JSON.stringify({ name: "pomspec", version }),
+    );
+    return execFileSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_ACTION_PATH: path.join(root, at),
+        POM: path.join(root, "app/node_modules/.bin/pom"),
+      },
+    });
+  };
+  assert.equal(said("pom/action", "0.1.3"), "");
+  // The older of the two is raised to the newer, by number, not by text (0.1.10 > 0.1.3).
+  assert.equal(
+    said("pom/action", "0.1.2"),
+    "::warning title=pomspec::pom's Action is v0.1.3 and the project's pomspec is 0.1.2, but they're released together, at one number: update the project's pomspec to 0.1.3 (npm i -D -E pomspec@0.1.3).\n",
+  );
+  assert.equal(
+    said("pom/action", "0.1.10"),
+    "::warning title=pomspec::pom's Action is v0.1.3 and the project's pomspec is 0.1.10, but they're released together, at one number: pin pomspec/pom/action@v0.1.10 in the workflow.\n",
+  );
+  // A copy of the Action has no pomspec beside it (here, its project's own package.json).
+  assert.equal(said("kept/action", "0.1.2"), "");
+  rmSync(path.join(root, "pom/package.json"));
+  assert.equal(said("pom/action", "0.1.2"), "");
+  rmSync(root, { force: true, recursive: true });
 });

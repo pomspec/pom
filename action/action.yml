@@ -1,8 +1,15 @@
 # pom's GitHub Action: a pull request's journeys played on its head and its base, on the
 # repository's own Actions minutes, recorded (pom videos) and sent to pomspec (pom upload),
 # which writes the pull request's comment and its "pomspec" check from them. It holds
-# no key of pomspec's GitHub App, only a runner token, and plays only what is
-# committed: the spec is written by whoever writes journeys.
+# no key of pomspec's GitHub App, and plays only what is committed: the spec is written by
+# whoever writes journeys.
+#
+# pomspec knows whose videos they are from GitHub's word for the workflow: in a job with
+# `permissions: id-token: write`, pom upload asks GitHub for an ID token naming this
+# repository and swaps it at pomspec for a token that uploads to this repository and its
+# project alone, for two hours, with no secret to keep. Or from a runner token (Settings →
+# Runners), passed as runner-token from a repository secret, which acts for the whole
+# organization. A pull request from a fork gets neither.
 #
 # Each side is an address, the first of: its input (head-url, base-url: a preview, a
 # staging site), for the head only GitHub's successful deployment of its commit (as
@@ -13,8 +20,10 @@
 # replaces its videos.
 #
 # The project has pomspec and @playwright/test among its devDependencies (pom init's
-# way). Each role's sign-in reads its credentials from the environment (secrets passed
-# as env); a secret's value shows as dots in the videos.
+# way), pomspec at the Action's own number: the two are released together (pomspec X.Y.Z
+# with pomspec/pom/action@vX.Y.Z), and the Action says so when the project's differs.
+# Each role's sign-in reads its credentials from the environment (secrets passed as env);
+# a secret's value shows as dots in the videos.
 
 name: pomspec
 description: Play a pull request's journeys on its head and its base, record them, and send the videos to pomspec.
@@ -28,8 +37,8 @@ inputs:
     description: pomspec's address.
     default: https://pomspec.com
   runner-token:
-    description: A runner token, created in pomspec under Settings → Runners and kept as a repository secret.
-    required: true
+    description: "A runner token, created in pomspec under Settings → Runners and kept as a repository secret. Not needed when the workflow has `permissions: id-token: write`: GitHub's word for it is enough."
+    required: false
   spec:
     description: The spec's folder, from the repository's root (pom.config.ts beside it).
     default: spec
@@ -46,7 +55,7 @@ inputs:
     description: Where the started app answers once it's up. Its journeys are played there.
     required: false
   project:
-    description: The pomspec project the videos go to, by its address, when this repository isn't linked to one. Those videos have no pull request. If empty, the project this repository is linked to.
+    description: The pomspec project the videos go to, by its address, when this repository isn't linked to one. Those videos have no pull request. If empty, the project this repository is linked to. Another project needs runner-token, since GitHub's word lets a workflow upload to its own repository's project alone.
     required: false
   node-version:
     description: The Node.js pom runs on (22.18 or later).
@@ -63,13 +72,14 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: A runner token
+    - name: GitHub's word for the workflow, or a runner token
       shell: bash
       env:
         TOKEN: ${{ inputs.runner-token }}
       run: |
-        if [ -z "$TOKEN" ]; then
-          echo "::error::No runner token: create one in pomspec under Settings → Runners, and add it as a repository secret. A pull request from a fork doesn't get secrets."
+        # GitHub sets ACTIONS_ID_TOKEN_REQUEST_URL in a job with `id-token: write`.
+        if [ -z "$TOKEN" ] && [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+          echo "::error::pomspec can't tell whose videos these are: add \`permissions: id-token: write\` to the workflow, or pass runner-token, a runner token from pomspec's Settings → Runners kept as a repository secret. A pull request from a fork gets neither."
           exit 1
         fi
 
@@ -157,6 +167,34 @@ runs:
           echo "playwright-version=$("$playwright" --version | awk '{ print $2 }')"
         } >> "$GITHUB_OUTPUT"
 
+    - name: The Action and pomspec, at one number
+      shell: bash
+      env:
+        POM: ${{ steps.install.outputs.pom }}
+      run: |
+        # The Action's number is its package.json's, beside its folder in pom's public
+        # repository; the project's, that of the pomspec beside the pom it runs. Apart, it
+        # says so and goes on: no run fails for it. A copy of the Action with no pomspec
+        # beside it (one kept in a project's own repository) says nothing.
+        version() {
+          [ -f "$1" ] && node -e '
+            const pkg = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (pkg.name === "pomspec" && pkg.version) console.log(pkg.version);' "$1" 2>/dev/null
+        }
+        action=$(version "$GITHUB_ACTION_PATH/../package.json") || action=""
+        project=$(version "$(dirname "$(dirname "$POM")")/pomspec/package.json") || project=""
+        if [ -n "$action" ] && [ -n "$project" ] && [ "$action" != "$project" ]; then
+          # The older of the two is raised to the newer, never the other way: an older Action
+          # may not take what the workflow passes it (0.1.1's needed a runner-token), and an
+          # older pom may not do what the Action asks of it.
+          if [ "$(printf '%s\n' "$action" "$project" | sort -V | tail -n 1)" = "$action" ]; then
+            fix="update the project's pomspec to $action (npm i -D -E pomspec@$action)"
+          else
+            fix="pin pomspec/pom/action@v$project in the workflow"
+          fi
+          echo "::warning title=pomspec::pom's Action is v$action and the project's pomspec is $project, but they're released together, at one number: $fix."
+        fi
+
     - name: Keep Playwright's Chromium
       id: browsers
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -171,9 +209,10 @@ runs:
         KEPT: ${{ steps.browsers.outputs.cache-hit }}
       run: |
         if [ "$KEPT" = true ]; then "$PLAYWRIGHT" install-deps chromium; else "$PLAYWRIGHT" install --with-deps chromium; fi
-        # ffmpeg makes each video's storyboard and still; without it they have none. It
-        # makes the pictures WebP too where it has libwebp (Ubuntu's); Homebrew's hasn't,
-        # so a Mac gets cwebp for them, else they go up as PNG, about 6 times larger.
+        # ffmpeg makes each video's storyboard and still, and the GIFs a pull request's
+        # comment shows (drawn in Chromium); without it they have none. It makes the
+        # pictures WebP too where it has libwebp (Ubuntu's); Homebrew's hasn't, so a Mac
+        # gets cwebp for them, else they go up as PNG, about 6 times larger.
         if ! command -v ffmpeg >/dev/null; then
           if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           elif [ "$RUNNER_OS" = macOS ]; then brew install ffmpeg
@@ -190,8 +229,14 @@ runs:
         SPEC: ${{ inputs.spec }}
         START: ${{ inputs.start }}
       run: |
-        # Started from its own checkout, by the start command or pom.config.ts's webServer.
-        if [ -z "$START" ] && ! grep -qs webServer "$(dirname "$SPEC")/pom.config.ts" "$SPEC/pom.config.ts"; then
+        # Started from its own checkout, by the start command or the config's webServer: a
+        # key of its own, not one pom init left commented out (pom says so too, and plays
+        # the head alone).
+        configs=()
+        for name in pom.config.ts pom.config.mts pom.config.js pom.config.mjs; do
+          configs+=("$(dirname "$SPEC")/$name" "$SPEC/$name")
+        done
+        if [ -z "$START" ] && ! grep -Eqs '^[[:space:]]*webServer[[:space:]]*:' "${configs[@]}"; then
           echo "The base has no address and nothing starts it, so only the head is played."
           exit 0
         fi
@@ -229,6 +274,7 @@ runs:
       shell: bash
       env:
         POM: ${{ steps.install.outputs.pom }}
+        # Empty, pom upload asks GitHub for its word for the workflow instead.
         POM_RUNNER_TOKEN: ${{ inputs.runner-token }}
         POM_SERVICE_URL: ${{ inputs.service-url }}
         SPEC: ${{ inputs.spec }}

@@ -14,6 +14,7 @@ import { SpecError, VISITOR } from "./feature.ts";
 import { generate } from "./generate.ts";
 import { CODEOWNERS, init } from "./init.ts";
 import { map } from "./map.ts";
+import { noToken, vouchable, workflowToken } from "./oidc.ts";
 import { videos } from "./play.ts";
 import { newer, publish, pullRequest, section, withSection } from "./pr.ts";
 import { nativePlatform, startDocker } from "./renderer.ts";
@@ -22,13 +23,14 @@ import { snapshot, waysIn } from "./snapshot.ts";
 import { defaultBase, filesAt, gitRoot, mergeBase, sourceAt, takenNow } from "./source.ts";
 import { picture } from "./terminal.ts";
 import { runsIn, runsOf } from "./videos.ts";
-import { defaultProject, SERVICE_URL, serviceOf } from "./service.ts";
+import { defaultProject, publishFor, SERVICE_URL, serviceOf } from "./service.ts";
 import { readSpec, type Spec } from "./spec.ts";
 
 // pom init [url] [--agent <provider>]  a repository made ready: pom.config.ts, spec/,
-//                                      then the spec written by your own agent (you
-//                                      choose which; pom runs its own command, under
-//                                      its own sign-in), then the app mapped
+//                                      on GitHub its workflow (init.ts), then the spec
+//                                      written by your own agent (you choose which; pom
+//                                      runs its own command, under its own sign-in),
+//                                      then the app mapped, then what's next
 // pom check [spec]                     journeys against their pages, no browser
 // pom generate [spec]                  the spec as Playwright page objects and tests, in .pom/
 // pom test [spec] [--base-url <url>]   generate, then run them against the app there
@@ -60,7 +62,8 @@ import { readSpec, type Spec } from "./spec.ts";
 //                                      repository linked to it; a spec with no GitHub
 //                                      remote goes to its name's project), as the
 //                                      organization's runner (POM_RUNNER_TOKEN, created in
-//                                      Settings → Runners), at pomspec.com unless
+//                                      Settings → Runners; on GitHub Actions, without one,
+//                                      the workflow GitHub vouches for), at pomspec.com unless
 //                                      --service or POM_SERVICE_URL says another: its
 //                                      videos, files and journeys; prints the address of
 //                                      its page, last
@@ -286,9 +289,16 @@ switch (command) {
     const provider = choice === "none" ? null : providerOf(choice);
     if (choice !== "none" && !provider)
       fail(`pom knows no agent "${choice}": ${PROVIDERS.map((p) => p.id).join(", ")}, or none`);
-    const done = init({ agent: provider?.id ?? null, baseURL: url, commit, dir: process.cwd() });
+    const done = init({
+      agent: provider?.id ?? null,
+      baseURL: url,
+      commit,
+      dir: process.cwd(),
+      service: process.env.POM_SERVICE_URL || null,
+    });
     for (const file of done.created)
       console.log(`made ${path.relative(process.cwd(), file) || "."}`);
+    for (const note of done.notes) console.log(note);
     console.log(
       `For CODEOWNERS, so the spec is reviewed and its pictures are not:\n  ${CODEOWNERS.join("\n  ")}`,
     );
@@ -309,13 +319,14 @@ switch (command) {
           );
       }
     }
-    if (url) {
-      const mapped = spawnSync(process.execPath, [process.argv[1]!, "map", "--base-url", url], {
-        stdio: "inherit",
-      });
-      process.exit(mapped.status ?? 1);
-    }
-    process.exit(0);
+    const mapped = url
+      ? spawnSync(process.execPath, [process.argv[1]!, "map", "--base-url", url], {
+          stdio: "inherit",
+        }).status
+      : 0;
+    // What's next, last, whatever the map found.
+    console.log(`\n${done.next.join("\n")}`);
+    process.exit(mapped ?? 1);
   }
   case "check": {
     const { config, spec } = await setup();
@@ -494,11 +505,14 @@ switch (command) {
     // Checked with the run, before anything is sent: one that isn't a full sha is refused there.
     const featureCommit = values["feature-commit"] ?? null;
     const address = values.service || process.env.POM_SERVICE_URL || SERVICE_URL;
+    // A runner token, else, on GitHub Actions, GitHub's word for the workflow (oidc.ts).
     const token =
       process.env.POM_RUNNER_TOKEN ||
-      fail(
-        `No runner token in POM_RUNNER_TOKEN: create one on pomspec (${address}) in Settings → Runners.`,
-      );
+      (vouchable()
+        ? await workflowToken({ say: (line) => console.error(line), url: address }).catch(
+            (error: Error) => fail(error.message),
+          )
+        : fail(noToken(address)));
     // Its runs, beside the spec or in pom's own folder.
     let spec = path.resolve(named ?? ".");
     if (!existsSync(runsOf(spec))) {
@@ -526,15 +540,25 @@ switch (command) {
             "pom upload needs --project <slug>, or --repo <owner/name> for a connected GitHub repository.",
           )));
     try {
-      const { already, latest, url } = await serviceOf({
+      // The service first: a token or an address it can't take is refused at once, never
+      // after every GIF is made.
+      const service = serviceOf({
         // Said as it happens, on stderr: the Action holds stdout until pom is done.
         say: (line) => console.error(line),
         token,
         url: address,
-      }).uploadRun({
+      });
+      // What the pull request's comment shows, for its repository's videos branch: its GIFs,
+      // made now, and its pictures; what is left out said as it happens, on stderr.
+      const shown =
+        pull === null
+          ? null
+          : await publishFor({ pull, run, say: (line) => console.error(line), spec });
+      const { already, latest, url } = await service.uploadRun({
         featureCommit,
         job: values.job ?? null,
         project,
+        publish: shown,
         pull,
         replace: values.replace ?? false,
         repo: values.repo ?? null,

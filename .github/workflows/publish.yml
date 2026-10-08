@@ -1,0 +1,142 @@
+name: Publish
+
+# A tag v<version> publishes pomspec@<version> to npm from this repository, by npm's
+# trusted publishing: npm takes GitHub's word for this workflow (pomspec/pom, publish.yml)
+# instead of a person's, so no npm token exists, and the package carries provenance, npm's
+# record of the commit and the run that built it. pom's release makes each tag, having
+# built, packed and checked this very commit: the tag's message lists every file of the
+# tarball it checked, by sha256, and the Node and pnpm that built them. Here the same is
+# built with the same Node and pnpm, and published only if it holds exactly those files.
+# What builds runs where nothing can publish (pack); what publishes runs nothing of the
+# package's (publish). Once npm has the version, the release moves v<major> to it. Should
+# a tag's push start no run, run it by hand on the tag (Run workflow, then the tag).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      publish: ${{ steps.tag.outputs.publish }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # The tag itself, with its message: a checkout may keep only the commit it names.
+      - name: What the tag says
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          refuse() {
+            echo "::error title=$TAG::$1"
+            exit 1
+          }
+          [ "$GITHUB_REF_TYPE" = tag ] || refuse "Run it on a tag v<version>, not on a branch."
+          git fetch --quiet --force --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git cat-file -t "$TAG")" = tag ] ||
+            refuse "$TAG has no message: pom's release makes each tag, with the files it checked."
+          [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] || refuse "$TAG moved while this ran."
+          message=$(git tag -l --format='%(contents)' "$TAG")
+          said() { printf '%s\n' "$message" | sed -n "s/^$1 \([0-9][0-9.]*\)\$/\1/p" | head -n 1; }
+          version=$(node -p 'require("./package.json").version')
+          [ "$TAG" = "v$version" ] || refuse "$TAG, but package.json is version $version."
+          [ "$(said pomspec)" = "$version" ] ||
+            refuse "$TAG lists no files of pomspec $version: pom's release makes each tag, with the files it checked."
+          node_version=$(said node)
+          pnpm_version=$(said pnpm)
+          [ -n "$node_version" ] && [ -n "$pnpm_version" ] || refuse "$TAG names no Node or no pnpm to build with."
+          if [ "$(npm view "pomspec@$version" version --prefer-online 2> /dev/null)" = "$version" ]; then
+            echo "::notice title=$TAG::pomspec@$version is on npm already: nothing to publish."
+            echo "publish=no" >> "$GITHUB_OUTPUT"
+          else
+            { echo "publish=yes"; echo "node=$node_version"; echo "pnpm=$pnpm_version"; } >> "$GITHUB_OUTPUT"
+          fi
+      - if: ${{ steps.tag.outputs.publish == 'yes' }}
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: ${{ steps.tag.outputs.pnpm }}
+      - if: ${{ steps.tag.outputs.publish == 'yes' }}
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          package-manager-cache: false
+          node-version: ${{ steps.tag.outputs.node }}
+      # No lockfile here: the dependencies are what their ranges resolve to today, with no
+      # install script run. The files the tag lists hold what that builds to.
+      - name: Built and packed
+        if: ${{ steps.tag.outputs.publish == 'yes' }}
+        run: |
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm build
+          mkdir "$RUNNER_TEMP/pack"
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+      - if: ${{ steps.tag.outputs.publish == 'yes' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: tarball
+          path: ${{ runner.temp }}/pack/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [pack]
+    if: ${{ needs.pack.outputs.publish == 'yes' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: tarball
+          path: ${{ runner.temp }}/pack
+      # Trusted publishing needs Node 22.14 and npm 11.5.1, or later.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          package-manager-cache: false
+          node-version: 24
+      # The tag read again here, not taken from pack, whose job ran what it installed.
+      - name: Published, if it holds what the release checked
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          refuse() {
+            echo "::error title=$TAG::$1"
+            exit 1
+          }
+          cd "$RUNNER_TEMP"
+          version=${TAG#v}
+          git init --quiet tag
+          git -C tag fetch --quiet --depth=1 "$REPOSITORY" "+refs/tags/$TAG:refs/tags/$TAG"
+          listed=$(git -C tag tag -l --format='%(contents)' "$TAG" | grep -E '^[0-9a-f]{64}  ' || true)
+          mkdir unpacked
+          tar -xzf "pack/pomspec-$version.tgz" -C unpacked
+          # Each file's sha256 and path, sorted, as pom's release lists them.
+          held=$(node -e '
+            const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
+            const root = process.argv[1];
+            const files = fs.readdirSync(root, { recursive: true }).map(String)
+              .filter((file) => fs.statSync(path.join(root, file)).isFile())
+              .map((file) => file.split(path.sep).join("/")).sort();
+            for (const file of files)
+              console.log(`${crypto.createHash("sha256").update(fs.readFileSync(path.join(root, file))).digest("hex")}  ${file}`);' \
+            unpacked/package)
+          if [ -z "$listed" ] || [ "$held" != "$listed" ]; then
+            diff <(printf '%s\n' "$listed") <(printf '%s\n' "$held") || true
+            refuse "pomspec-$version.tgz, built here, does not hold what the release checked (< listed, > built): nothing is published."
+          fi
+          npm_version=$(npm --version)
+          IFS=. read -r major minor patch <<< "${npm_version%%-*}"
+          if ((major < 11 || (major == 11 && (minor < 5 || (minor == 5 && patch < 1))))); then
+            refuse "npm $npm_version cannot publish by trusted publishing: 11.5.1 or later can."
+          fi
+          npm publish "pack/pomspec-$version.tgz" --access public --provenance

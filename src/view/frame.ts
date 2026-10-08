@@ -3,8 +3,8 @@ import type { Video } from "./model.ts";
 // A video's frame at a moment: the clean recording (the app alone) and, over it, what the
 // journey did, drawn as a well-produced product video draws it. One module for every
 // renderer: pomspec's video page draws it live over the recording (`pomspec/frame`), and
-// the videos runner (prototype/videos.ts) draws it over each frame of the recording in
-// Chromium to make the MP4 and GIF a pull request shows, so the two can never drift.
+// gif.ts draws it over each frame of the recording in Chromium to make the GIF a pull
+// request's comment shows, so the two can never drift.
 //
 // - The camera glides in on where each step happens (about 1.5x, never past 1.8x, the
 //   target and its surroundings in view), holds while the pointer types there, and

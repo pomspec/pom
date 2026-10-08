@@ -10,7 +10,7 @@ import type { Video, VideoFeature, VideoRepo, VideoRun } from "./view/model.ts";
 // the run played it, and the repository it is in. What a video says, wherever it is read,
 // is video.ts's.
 
-// The videos runner (prototype/videos.ts) words a video's marks as pom's does.
+// A pull request's GIF (gif.ts) words a video's marks as pom's does.
 export { plainVideo } from "./video.ts";
 
 const readJson = <T>(file: string): T | null => {

@@ -139,4 +139,5 @@ jobs:
           if ((major < 11 || (major == 11 && (minor < 5 || (minor == 5 && patch < 1))))); then
             refuse "npm $npm_version cannot publish by trusted publishing: 11.5.1 or later can."
           fi
-          npm publish "pack/pomspec-$version.tgz" --access public --provenance
+          # ./ makes it a file: npm reads pack/<name> as GitHub's owner/repo shorthand.
+          npm publish "./pack/pomspec-$version.tgz" --access public --provenance

@@ -48,21 +48,54 @@ export type MappedPage = Readonly<{
 
 export type AppMap = Readonly<{ pages: ReadonlyArray<MappedPage> }>;
 
-const ID =
-  /^(?:\d+|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{6,})$/i;
-
-/** A path's route: a segment that reads as an id is `[id]` (`[id2]` after it). */
+/**
+ * A path's route, as the spec's folders hold it. A segment that reads as an id is `[id]`
+ * (`[id2]` after it); one no folder of the spec could be named is `[file]` (`[file2]`…):
+ * a file's name a folder would read as a journey, its pictures or a tree
+ * (`say-hello.feature`, `x.shots`, `page.tree.yml`), or one the spec reads as no segment
+ * at all (`.well-known`, `(group)`).
+ * Whole on its own, as the crawl runs it in the browser's test too.
+ */
 export function routeOf(at: string): string {
-  let ids = 0;
+  const id =
+    /^(?:\d+|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{6,})$/i;
+  const unnamable = /\.(?:feature|shots|tree\.yml)$|^\.|^\(.*\)$|^\[.*\]$/;
+  const counts: Record<string, number> = {};
+  const param = (name: string) => {
+    counts[name] = (counts[name] ?? 0) + 1;
+    return counts[name] === 1 ? `[${name}]` : `[${name}${counts[name]}]`;
+  };
   const segments = at
     .split("/")
     .filter(Boolean)
     .map((segment) => {
-      if (!ID.test(segment) || !/\d/.test(segment)) return segment;
-      ids += 1;
-      return ids === 1 ? "[id]" : `[id${ids}]`;
+      if (id.test(segment) && /\d/.test(segment)) return param("id");
+      if (unnamable.test(segment)) return param("file");
+      return segment;
     });
   return `/${segments.join("/")}`;
+}
+
+/**
+ * A picture's name from the whole address it shows, its query too (`/pricing?plan=team`
+ * is `pricing-plan-team`), and a number after it when another address already reads the
+ * same in `taken`. A long one (a query carrying an address) keeps its start and a hash
+ * of the whole, under a file name's limit. Whole on its own, as the crawl runs it in the
+ * browser's test too.
+ */
+export function pictureName(address: string, taken: Set<string>): string {
+  const whole = address.replace(/#.*$/, "");
+  let base = whole.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "home";
+  if (base.length > 100) {
+    // FNV-1a, 32 bits: two addresses alike for their first 80 characters differ by it.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < whole.length; i++) hash = Math.imul(hash ^ whole.charCodeAt(i), 0x01000193);
+    base = `${base.slice(0, 80).replace(/-$/, "")}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  }
+  let name = base;
+  for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base}-${n}`;
+  taken.add(name.toLowerCase());
+  return name;
 }
 
 /** Whether a path is one the crawl leaves alone (signing out ends the role it maps). */
@@ -95,10 +128,8 @@ export function inventory(tree: ReadonlyArray<OutlineNode>, everyLink = false): 
   });
 }
 
-const slug = (at: string) => at.replace(/^\/|\/$/g, "").replace(/[^a-zA-Z0-9]+/g, "-") || "home";
-
 /** The crawl, as a Playwright test of its own (it signs in as journeys do, through the generated ones). */
-function crawlTest(input: {
+export function crawlTest(input: {
   config: Config;
   roles: ReadonlyArray<{ entry: string | null; role: string; viaConfig: boolean }>;
   start: string;
@@ -112,8 +143,8 @@ import { signIn } from "../pom.ts";
 ${entries.map((name) => `import { ${name} } from "../journeys/${name}.ts";`).join("\n")}
 
 const SETTINGS = ${JSON.stringify({ exclude: input.config.map.exclude, limit: input.config.map.limit, mask: input.config.mask, start: input.start })};
-const ID = ${ID.toString()};
-const routeOf = (at: string) => { let n = 0; return "/" + at.split("/").filter(Boolean).map((s) => (ID.test(s) && /\\d/.test(s) ? (++n === 1 ? "[id]" : "[id" + n + "]") : s)).join("/"); };
+const routeOf = ${routeOf.toString()};
+const pictureName = ${pictureName.toString()};
 const excluded = (at: string) => SETTINGS.exclude.some((p) => at === p || at.startsWith(p + "/"));
 
 ${input.roles
@@ -127,6 +158,7 @@ ${input.roles
   const queue = [new URL(SETTINGS.start, origin).href];
   const seen = new Set<string>();
   const routes = new Map<string, number>();
+  const pictures = new Set<string>();
   const pages: Array<unknown> = [];
   while (queue.length && pages.length < SETTINGS.limit) {
     const url = queue.shift()!;
@@ -140,7 +172,8 @@ ${input.roles
     // Two of a route are enough to know it: an id's page, again, is the same page.
     if ((routes.get(route) ?? 0) >= 2) continue;
     routes.set(route, (routes.get(route) ?? 0) + 1);
-    const picture = path.join(dir, (here.pathname.replace(/^\\/|\\/$/g, "").replace(/[^a-zA-Z0-9]+/g, "-") || "home") + ".png");
+    // Named by the whole address: two pages a query tells apart are two pictures.
+    const picture = path.join(dir, pictureName(here.pathname + here.search, pictures) + ".png");
     await page.screenshot({ animations: "disabled", caret: "hide", mask: [page.locator("iframe"), ...SETTINGS.mask.map((s) => page.locator(s))], maskColor: "#d4d4d8", path: picture });
     const outline = await page.locator("body").ariaSnapshot();
     const links = await page.$$eval("a[href]", (anchors) =>
@@ -211,6 +244,9 @@ export function map(input: {
 
   // Each role's pages, merged across widths by route.
   const kept = path.join(out, "map", "pictures");
+  // A route's pictures, one name for it whoever sees it, at every width: no two routes share one.
+  const named = new Map<string, string>();
+  const pictured = new Set<string>();
   const byRoute = new Map<
     string,
     {
@@ -240,7 +276,8 @@ export function map(input: {
         at.examples.add(page.path);
         for (const link of page.links) at.links.add(routeOf(link));
         if (!at.picture[width] && existsSync(page.picture)) {
-          const to = path.join(kept, role, width, `${slug(route)}.png`);
+          if (!named.has(route)) named.set(route, pictureName(route, pictured));
+          const to = path.join(kept, role, width, `${named.get(route)}.png`);
           mkdirSync(path.dirname(to), { recursive: true });
           copyFileSync(page.picture, to);
           at.picture[width] = to;

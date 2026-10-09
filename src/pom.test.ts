@@ -4,12 +4,19 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import ts from "typescript";
 import { checkSpec } from "./check.ts";
 import { generate } from "./generate.ts";
 import { specIndex } from "./indexer.ts";
 import { layoutModel, pageModel } from "./objects.ts";
-import { pageAt, readSpec } from "./spec.ts";
+import { snapshotArgs } from "./snapshot.ts";
+import { journeyFunction, pageAt, readSpec } from "./spec.ts";
+
+/** Where pom's own dependency is installed: `@types` is its node_modules/@types. */
+const installed = (name: string) =>
+  fileURLToPath(new URL(`../node_modules/${name}`, import.meta.url));
 
 /** A spec folder from `{ "path/file": "contents" }`. */
 function spec(files: Record<string, string>) {
@@ -424,6 +431,257 @@ test("a variation file names a width, a role or a state the spec has", () => {
         }),
       ),
     /"admin" is no width, role or state of this spec/,
+  );
+});
+
+test("every name pom generates is an identifier, and one of its own", () => {
+  const root = spec({
+    "page.tree.yml": '- heading "Acme" [level=1]\n- button "Sign in"\n',
+    "home/page.tree.yml": '- heading "Home" [level=1]\n',
+    "2024/page.tree.yml": `
+- heading "1. What pomspec is" [level=2]
+- button "#1 A friendlier hello"
+- button "#2 A friendlier hello"
+- button "Constructor"
+- button "Delete"
+`,
+    "2024/1-delete.dialog.tree.yml": '- dialog "Delete?":\n  - button "Delete"\n',
+    "2024/1_delete.dialog.tree.yml": '- dialog "Really?":\n  - button "Delete"\n',
+    "sign-in.feature": `
+Feature: Sign in
+  Scenario: Sign in
+    # In
+    Given I am on "/"
+    When I press the "Sign in" button
+    # Home
+    # as owner
+    Then I am on "/home"
+`,
+    "look.feature": `
+Feature: Delete
+  Background:
+    Given I am signed in as the "owner"
+  Scenario: Delete
+    # Look
+    Given I am on "/2024"
+    When I press the "#1 A friendlier hello" button
+    And I press the "1. What pomspec is" heading
+`,
+  });
+  const read = readSpec(root);
+  assert.deepEqual(read.pages.map((page) => page.className).sort(), [
+    "Home2Page",
+    "HomePage",
+    "_2024Page",
+  ]);
+  const year = read.pages.find((page) => page.route === "/2024")!;
+  assert.deepEqual(
+    year.dialogs.map((dialog) => [dialog.className, dialog.property]),
+    [
+      ["_2024_1DeleteDialog", "_1DeleteDialog"],
+      ["_2024_1Delete2Dialog", "_1Delete2Dialog"],
+    ],
+  );
+  assert.deepEqual(
+    pageModel(year).controls.map((control) => control.property),
+    ["_1WhatPomspecIs", "_1AFriendlierHello", "_2AFriendlierHello", "constructorButton", "delete"],
+  );
+  // A journey's function: never a word JavaScript keeps, nor one the test already has.
+  const functions = read.journeys.map(journeyFunction).sort();
+  assert.deepEqual(functions, ["deleteJourney", "signInJourney"]);
+
+  const out = path.join(root, "..", `${path.basename(root)}-out`);
+  const { problems, written } = generate(read, out);
+  assert.deepEqual(problems, []);
+  // Every file the spec's names reach compiles, checked as TypeScript checks it, against
+  // Playwright's own types: a variable named as its class would be used before it is made.
+  // (Not playwright.config.ts, which names none: Playwright's types leave out the
+  // `expect.toHaveScreenshot.timeout` it honours there.)
+  const program = ts.createProgram(
+    written.filter((one) => one.endsWith(".ts") && path.basename(one) !== "playwright.config.ts"),
+    {
+      allowImportingTsExtensions: true,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+      paths: { "@playwright/test": [installed("@playwright/test/index.d.ts")] },
+      skipLibCheck: true,
+      target: ts.ScriptTarget.ES2022,
+      types: ["node"],
+      typeRoots: [installed("@types")],
+    },
+  );
+  assert.deepEqual(
+    ts
+      .getPreEmitDiagnostics(program)
+      .map(
+        (d) =>
+          `${d.file ? path.basename(d.file.fileName) : ""} TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`,
+      ),
+    [],
+  );
+  const test = readFileSync(
+    written.find((file) => file.endsWith("look.spec.ts"))!,
+    "utf8",
+  );
+  assert.match(test, /import \{ signInJourney \} from "\.\.\/journeys\/signInJourney\.ts";/);
+  // A page whose class starts with no letter: its variable, from a `$`, is not its class.
+  assert.match(test, /const \$2024Page = new _2024Page\(page\);/);
+  assert.match(test, /await \$2024Page\._1AFriendlierHello\.click\(\);/);
+});
+
+test("a line whose name is several controls of its page is refused: Playwright would act on none", () => {
+  const root = spec({
+    "members/page.tree.yml": `
+- navigation "Sidebar":
+  - link "Home"
+- main:
+  - heading "Members" [level=1]
+  - list:
+    - listitem:
+      - button "Revoke"
+    - listitem:
+      - button "Revoke"
+    - listitem:
+      - button "Revoke"
+  - link "Pricing"
+`,
+    "members/page.desktop.tree.yml": '- navigation "Sidebar":\n  - button "Collapse"\n',
+    "members/layout.tree.yml": '- banner:\n  - navigation:\n    - link "Pricing"\n',
+    "members/revoke.feature": `
+Feature: Revoke
+  Scenario: Revoke
+    # Revoke
+    Given I am on "/members"
+    When I press the "Revoke" button
+    Then "Sidebar" shows "Home"
+    When I follow the "Pricing" link
+`,
+  });
+  const { problems } = checkSpec(readSpec(root));
+  assert.deepEqual(
+    problems.map((p) => [p.line, p.message]),
+    [
+      [
+        5,
+        'button "Revoke" is 3 controls on /members: give each a name of its own, so the line says which one',
+      ],
+      // The page's "Pricing" and its layout's: one locator, both on the page.
+      [
+        7,
+        'link "Pricing" is 2 controls on /members: give each a name of its own, so the line says which one',
+      ],
+    ],
+  );
+});
+
+test("arriving at a page waits for its own first heading or landmark, not only its address", () => {
+  const root = spec({
+    ...NOTES,
+    "(site)/notes/[id]/page.tree.yml":
+      '# generated by pom\n- navigation "Breadcrumb"\n- heading "A note" [level=1]\n',
+    "(site)/notes/new/page.tree.yml": '- navigation "Breadcrumb"\n- button "Save"\n',
+    // A person's tree whose first node of its own is data: a project's section.
+    "(site)/projects/page.tree.yml":
+      '- navigation "Breadcrumb"\n- region "Family recipes":\n  - heading "Family recipes" [level=2]\n',
+  });
+  const out = path.join(root, "..", `${path.basename(root)}-out`);
+  generate(readSpec(root), out);
+  const page = (name: string) => readFileSync(path.join(out, "pages", `${name}.ts`), "utf8");
+  // Waited for a while, then on, whoever wrote the tree: what it names may be data the
+  // page does not hold in every journey, which the lines, not the arrival, assert.
+  const waits = (property: string) =>
+    new RegExp(
+      `await expect\\(this\\.page\\)\\.toHaveURL\\(.+\\);\\n\\s+await this\\.${property}\\.first\\(\\)\\.waitFor\\(\\{ state: "visible", timeout: 5_000 \\}\\)\\.catch\\(\\(\\) => \\{\\}\\);\\n\\s+\\}`,
+    );
+  assert.match(page("NotesPage"), waits("notes"));
+  assert.match(page("ProjectsPage"), waits("familyRecipes"));
+  // Its breadcrumb is another page's too, which proves nothing: its heading is its own.
+  assert.match(page("NotesIdPage"), waits("aNote"));
+  // None asserts it on arrival.
+  for (const name of ["NotesPage", "ProjectsPage", "NotesIdPage"])
+    assert.doesNotMatch(page(name), /toBeVisible/);
+  // No heading or landmark of its own: its address alone.
+  assert.match(
+    page("NotesNewPage"),
+    /async expectLoaded\(\) \{\n\s+await expect\(this\.page\)\.toHaveURL\(.+\);\n\s+\}/,
+  );
+});
+
+test("pom snapshot tells a spec on disk from a page's address, and says when both could be", () => {
+  const root = spec({ "page.tree.yml": '- heading "Home" [level=1]\n' });
+  const empty = mkdtempSync(path.join(tmpdir(), "pom-empty-"));
+  const near = [tmpdir()];
+  const { notes, paths, specs } = snapshotArgs([root, "/sign-up", empty, "spec"], near);
+  assert.deepEqual(specs, [root, "spec"]);
+  assert.deepEqual(paths, ["/sign-up", empty]);
+  assert.deepEqual(notes, [
+    `${root}: read as the spec, the folder on disk, not a page's address`,
+    `${empty}: read as a page's address: the folder on disk there holds no spec`,
+  ]);
+  // Folders every disk has, far from any spec (`/`, `/home`): plainly pages, nothing said.
+  assert.deepEqual(snapshotArgs(["/", "/home"], near), {
+    notes: [],
+    paths: ["/", "/home"],
+    specs: [],
+  });
+  // A spec is said wherever it is.
+  assert.deepEqual(snapshotArgs([root], [empty]).notes, [
+    `${root}: read as the spec, the folder on disk, not a page's address`,
+  ]);
+});
+
+test("a line sees a run's own email only where the journey typed it; any other is as written", () => {
+  const root = spec({
+    "sign-up/page.tree.yml": '- textbox "Email"\n- button "Join"\n',
+    "sign-up/sign-up.feature": `
+Feature: Sign up
+  Scenario: Sign up
+    # Join
+    Given I am on "/sign-up"
+    When I fill "Email" with "ana@example.com"
+    And I press the "Join" button
+    # In
+    # as owner
+    Then I am on "/members"
+`,
+    "members/page.tree.yml": `
+- paragraph: ana@example.com
+- paragraph: rosa@example.com invited by dev@example.com
+- paragraph: Sent to rosa@example.com
+- region "Members"
+- textbox "Invite by email"
+`,
+    "members/invite.feature": `
+Feature: Invite
+  Background:
+    Given I am signed in as the "owner"
+  Scenario: Invite
+    # Invite
+    Given I am on "/members"
+    Then I see "ana@example.com"
+    And I see "rosa@example.com invited by dev@example.com"
+    When I fill "Invite by email" with "rosa@example.com"
+    Then I see "Sent to rosa@example.com"
+    And I see "rosa@example.com invited by dev@example.com"
+    And "Members" shows "dev@example.com"
+`,
+  });
+  const { compiled, problems } = checkSpec(readSpec(root));
+  assert.deepEqual(problems, []);
+  const invite = compiled.find((c) => c.journey.title === "Invite")!;
+  assert.deepEqual(
+    invite.steps[0]!.calls.slice(1).map((call) => call.code),
+    [
+      // Typed by its sign-in, played first in the same test.
+      'await expect(membersPage.page.getByText(unique("ana@example.com")).first()).toBeVisible()',
+      // Not typed yet: as the app has it.
+      'await expect(membersPage.page.getByText("rosa@example.com invited by dev@example.com").first()).toBeVisible()',
+      'await membersPage.inviteByEmail.fill(unique("rosa@example.com"))',
+      'await expect(membersPage.page.getByText(unique("Sent to rosa@example.com")).first()).toBeVisible()',
+      'await expect(membersPage.page.getByText(unique("rosa@example.com") + " invited by dev@example.com").first()).toBeVisible()',
+      'await expect(membersPage.members).toContainText("dev@example.com")',
+    ],
   );
 });
 

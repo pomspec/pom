@@ -81,17 +81,83 @@ export type Spec = Readonly<{
 export const variationsOf = (spec: Spec): ReadonlySet<string> =>
   new Set([...spec.widths, ...spec.roles, ...spec.states]);
 
-const pascal = (words: string) =>
-  words
+// Every name pom generates is a valid identifier, and unique where it is declared: a
+// class per page, layout and dialog (each a file in pages/, so told apart regardless of
+// case), a property per control (objects.ts), a function per journey another plays first.
+
+/** Words JavaScript keeps for itself: no function or variable pom writes is named one. */
+const RESERVED = new Set(
+  (
+    "arguments await break case catch class const continue debugger default delete do else " +
+    "enum eval export extends false finally for function if implements import in instanceof " +
+    "interface let new null package private protected public return static super switch " +
+    "this throw true try typeof undefined var void while with yield"
+  ).split(" "),
+);
+
+/** Words as a name: `#1 A friendlier hello` is `_1AFriendlierHello`, never from a digit. */
+const pascal = (words: string) => {
+  const name = words
     .split(/[^A-Za-z0-9]+/)
     .filter(Boolean)
     .map((word) => word[0]!.toUpperCase() + word.slice(1))
     .join("");
+  return /^\d/.test(name) ? `_${name}` : name;
+};
 
+/** Words as a property's name: `1. What pomspec is` is `_1WhatPomspecIs`. */
 export const camel = (words: string) => {
   const name = pascal(words);
   return name ? name[0]!.toLowerCase() + name.slice(1) : "_";
 };
+
+/** `name`, else `name2`, `name3`…: the first `taken` does not hold, regardless of case; then taken. */
+export function uniqueName(name: string, taken: Set<string>, suffix = ""): string {
+  const at = (n: number) => {
+    const made = `${name}${n > 1 ? n : ""}${suffix}`;
+    return /^\d/.test(made) ? `_${made}` : made;
+  };
+  let n = 1;
+  while (taken.has(at(n).toLowerCase())) n += 1;
+  taken.add(at(n).toLowerCase());
+  return at(n);
+}
+
+/**
+ * A page's variable in a test: its class, from a small letter; from a `$` where its class
+ * starts with no letter (`_2024Page` is `$2024Page`), since a variable named as its class
+ * would hide the class it is made from. No class starts with a `$`.
+ */
+export const pageVariable = (page: Page) => {
+  const name = camel(page.className);
+  return name === page.className ? `$${name.slice(1)}` : name;
+};
+
+/**
+ * What a test already names, beside its pages' variables: Playwright's and pom's own
+ * helpers (pom.ts), and the page it is given.
+ */
+const BOUND = new Set([
+  ...RESERVED,
+  ..."begin caption end expect finish mark moment outline page reset say signIn test unique width".split(
+    " ",
+  ),
+]);
+
+const functions = new WeakMap<Journey, string>();
+
+/**
+ * A journey another plays first (to sign in), as its function: its title, made unique
+ * among the spec's journeys and kept off what a test already names (`Sign in` is
+ * `signInJourney`, beside pom's own `signIn`).
+ */
+export const journeyFunction = (journey: Journey) =>
+  functions.get(journey) ?? functionName(journey.title, new Set());
+
+function functionName(title: string, taken: Set<string>): string {
+  const name = camel(title);
+  return BOUND.has(name) ? uniqueName(name, taken, "Journey") : uniqueName(name, taken);
+}
 
 const isGroup = (segment: string) => /^\(.+\)$/.test(segment);
 
@@ -126,22 +192,28 @@ export function readSpec(root: string, widths: ReadonlyArray<Width> = WIDTHS): S
     );
   const pages: Array<Page> = [];
   const journeys: Array<Journey> = [];
+  // The classes in pages/: Playwright's own two names are the files' imports.
+  const classes = new Set(["locator", "page"]);
 
   const visit = (dir: string, parts: Array<string>, layouts: Array<Layout>) => {
     const entries = readdirSync(dir).sort();
+    const stats = new Map(entries.map((entry) => [entry, statSync(path.join(dir, entry))]));
+    // A tree is a file: a folder named like one (a page at `/…/page.tree.yml`) is a path
+    // segment, as any folder is.
+    const files = entries.filter((entry) => stats.get(entry)!.isFile());
     const here = [...layouts];
-    if (entries.includes("layout.tree.yml")) {
+    if (files.includes("layout.tree.yml")) {
       const name = parts.map((part) => part.replace(/[()[\]]/g, "")).join(" ") || "root";
       here.push({
-        ...tree(dir, "layout", entries),
-        className: `${pascal(name)}Layout`,
+        ...tree(dir, "layout", files),
+        className: uniqueName(pascal(name), classes, "Layout"),
         dir,
       });
     }
     const segments = parts.filter((part) => !isGroup(part));
-    if (entries.includes("page.tree.yml")) {
+    if (files.includes("page.tree.yml")) {
       const named = segments.map((part) => part.replace(/[[\]]/g, "")).join(" ") || "home";
-      const dialogs = entries
+      const dialogs = files
         .filter((entry) => /\.(dialog|menu)\.tree\.yml$/.test(entry))
         .map((entry): Dialog => {
           const kind = entry.endsWith(".menu.tree.yml") ? "menu" : "dialog";
@@ -162,7 +234,7 @@ export function readSpec(root: string, widths: ReadonlyArray<Width> = WIDTHS): S
           };
         });
       pages.push({
-        ...tree(dir, "page", entries),
+        ...tree(dir, "page", files),
         className: `${pascal(named)}Page`,
         dialogs,
         dir,
@@ -174,31 +246,42 @@ export function readSpec(root: string, widths: ReadonlyArray<Width> = WIDTHS): S
     }
     for (const entry of entries) {
       const full = path.join(dir, entry);
-      if (entry.endsWith(".feature")) journeys.push(readFeature(readFileSync(full, "utf8"), full));
+      const stat = stats.get(entry)!;
+      // A journey is a file too: a folder named like one (a page at `/…/say-hello.feature`)
+      // is a path segment.
+      if (stat.isFile() && entry.endsWith(".feature"))
+        journeys.push(readFeature(readFileSync(full, "utf8"), full));
       // A journey's pictures (`<journey>.shots/`) are no path segment.
-      else if (
-        statSync(full).isDirectory() &&
-        !entry.startsWith(".") &&
-        !entry.endsWith(".shots")
-      ) {
+      else if (stat.isDirectory() && !entry.startsWith(".") && !entry.endsWith(".shots")) {
         visit(full, [...parts, entry], here);
       }
     }
   };
 
   visit(root, [], []);
-  // Two pages at one path are told apart by their groups' names, in their classes too.
+  // Two pages at one path are told apart by their groups' names, in their classes too;
+  // any two alike still (`/` and `/home`), by a number.
   const named = pages.map((page) => {
-    const className = pages.some((other) => other !== page && other.route === page.route)
+    const base = pages.some((other) => other !== page && other.route === page.route)
       ? `${pascal(page.groups.join(" "))}${page.className}`
       : page.className;
+    const className = uniqueName(base.replace(/Page$/, ""), classes, "Page");
     // A dialog is its page's: two pages may each have a `delete.dialog.tree.yml`.
-    const dialogs = page.dialogs.map((dialog) => ({
-      ...dialog,
-      className: `${className.replace(/Page$/, "")}${dialog.className}`,
-    }));
+    const properties = new Set<string>();
+    const dialogs = page.dialogs.map((dialog) => {
+      const suffix = dialog.kind === "menu" ? "Menu" : "Dialog";
+      const own = dialog.className.slice(0, -suffix.length);
+      return {
+        ...dialog,
+        className: uniqueName(`${className.replace(/Page$/, "")}${own}`, classes, suffix),
+        property: uniqueName(dialog.property.slice(0, -suffix.length), properties, suffix),
+      };
+    });
     return { ...page, className, dialogs };
   });
+  // A journey's function, once its pages' variables are known: no test declares one twice.
+  const variables = new Set(named.map((page) => pageVariable(page).toLowerCase()));
+  for (const journey of journeys) functions.set(journey, functionName(journey.title, variables));
   const roles = new Set([
     VISITOR,
     ...journeys.flatMap((journey) => [

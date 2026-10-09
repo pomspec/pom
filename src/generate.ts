@@ -16,13 +16,15 @@ import { type Config, resolveConfig } from "./config.ts";
 import type { Journey } from "./feature.ts";
 import { plan, type Planned } from "./moments.ts";
 import {
+  type Control,
   dialogModel,
   layoutModel,
   layoutProperty,
   type ObjectModel,
   pageModel,
 } from "./objects.ts";
-import type { Dialog, Layout, Page, Spec } from "./spec.ts";
+import { allNodes, type Dialog, type Layout, type Page, type Spec } from "./spec.ts";
+import { type Node, walk } from "./tree.ts";
 
 // The spec as plain Playwright: a class per page (pages/), a component object
 // per layout and dialog, a test per journey (tests/, as the spec's folders
@@ -57,8 +59,54 @@ function pathPattern(page: Page): string {
   return `/^https?:\\/\\/[^/]+\\/${body}${body ? "\\/?" : ""}(?:[?#].*)?$/`;
 }
 
-function pageFile(page: Page): string {
+/** The landmark roles, `main` among them: what a page is made of, beside its headings. */
+const LANDMARKS = new Set([
+  "banner",
+  "complementary",
+  "contentinfo",
+  "form",
+  "main",
+  "navigation",
+  "region",
+  "search",
+]);
+
+/**
+ * What says a page is the one on the screen, not the one it left (the address changes
+ * before the page it names is drawn): its tree's first heading or named landmark that no
+ * other page's tree has, as its object holds it; none when every one is another's too.
+ */
+export function arrivalOf(page: Page, spec: Spec, model: ObjectModel): Control | null {
+  const keyOf = (node: Node) => `${node.role} ${String(node.name)}`;
+  const elsewhere = new Set(
+    spec.pages
+      .filter((other) => other !== page)
+      .flatMap((other) => [other, ...other.layouts])
+      .flatMap((tree) => [...walk(allNodes(tree))].map(({ node }) => keyOf(node))),
+  );
+  for (const { node } of walk(page.tree)) {
+    if (node.name === undefined || elsewhere.has(keyOf(node))) continue;
+    if (node.role !== "heading" && !LANDMARKS.has(node.role)) continue;
+    const control = model.controls.find((c) => c.nodes.includes(node));
+    if (control) return control;
+  }
+  return null;
+}
+
+/**
+ * `expectLoaded`'s wait for the page itself: a while, then on. Whoever wrote the tree,
+ * what it names first may be data (a project's name, as a section's or a heading's), which
+ * the page may not hold in every journey: asserting what is on it is the lines' job. No
+ * line acts on the page leaving all the same.
+ */
+function arrivalWait(arrival: Control | null): string {
+  if (!arrival) return "";
+  return `\n    await this.${arrival.property}.first().waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});`;
+}
+
+function pageFile(page: Page, spec: Spec): string {
   const model = pageModel(page);
+  const arrival = arrivalOf(page, spec, model);
   const params = page.segments.filter((s) => s.startsWith("[")).map((s) => s.slice(1, -1));
   // A segment's name is a key, quoted: `[project-id]` is `params["project-id"]`.
   const url = `/${page.segments.map((s) => (s.startsWith("[") ? `\${params[${JSON.stringify(s.slice(1, -1))}]}` : s)).join("/")}`;
@@ -91,9 +139,9 @@ ${[
     await this.expectLoaded();
   }
 
-  /** At this page. What is on it, each control's own step finds. */
+  /** At this page: its address${arrival ? `, then a wait for its ${arrival.node.role} ${JSON.stringify(String(arrival.node.name)).replaceAll("*/", "*\\/")}` : ""}. What else is on it, each control's own step finds. */
   async expectLoaded() {
-    await expect(this.page).toHaveURL(${pathPattern(page)});
+    await expect(this.page).toHaveURL(${pathPattern(page)});${arrivalWait(arrival)}
   }
 }
 `;
@@ -708,7 +756,7 @@ export function generate(
   for (const layout of layouts.values())
     write(path.join(out, "pages", `${layout.className}.ts`), layoutFile(layout));
   for (const page of spec.pages) {
-    write(path.join(out, "pages", `${page.className}.ts`), pageFile(page));
+    write(path.join(out, "pages", `${page.className}.ts`), pageFile(page, spec));
     for (const dialog of page.dialogs)
       write(path.join(out, "pages", `${dialog.className}.ts`), dialogFile(dialog));
   }

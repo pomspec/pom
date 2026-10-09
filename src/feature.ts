@@ -1,7 +1,7 @@
 // A journey is Gherkin in a closed grammar, each line one Playwright call:
 //
 //   Given I am on "/sign-up"              page.goto, through the page object
-//   Then I am on "/new"                   the URL, then the page's tree
+//   Then I am on "/new"                   the URL, then waits for its own heading or landmark
 //   When I press the "Save" button        getByRole("button", { name })
 //   When I press the "Archive" tab        …any role, by its name
 //   When I follow the "Pricing" link      getByRole("link", { name })

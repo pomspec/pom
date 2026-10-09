@@ -107,9 +107,10 @@ export function writePage(
     written.push({ file, kind: "written" });
   }
   const kept = new Set(written.map((w) => w.file));
-  for (const name of existsSync(dir) ? readdirSync(dir) : []) {
-    if (!/^page\.[a-z0-9-]+\.tree\.yml$/.test(name)) continue;
-    const file = path.join(dir, name);
+  for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
+    // A folder named like a tree is a page's path segment, never a tree to remove.
+    if (!entry.isFile() || !/^page\.[a-z0-9-]+\.tree\.yml$/.test(entry.name)) continue;
+    const file = path.join(dir, entry.name);
     if (!kept.has(file) && isGenerated(readFileSync(file, "utf8"))) rmSync(file);
   }
   return written;

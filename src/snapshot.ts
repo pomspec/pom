@@ -1,7 +1,16 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { entryFor, journeyFunction } from "./check.ts";
-import type { Config } from "./config.ts";
+import { type Config, findConfig } from "./config.ts";
 import { VISITOR } from "./feature.ts";
 import { inventory, play, routeOf } from "./map.ts";
 import { readOutline } from "./outline.ts";
@@ -26,6 +35,59 @@ export type Snapped = Readonly<{
 const slug = (at: string) => at.replace(/^\/|\/$/g, "").replace(/[^a-zA-Z0-9]+/g, "-") || "home";
 
 type Way = Readonly<{ entry: string | null; role: string; viaConfig: boolean }>;
+
+/** A folder on disk that holds a spec: a pom.config beside or in it, or journeys and trees. */
+function holdsSpec(dir: string): boolean {
+  if (findConfig(dir) !== null) return true;
+  try {
+    return readdirSync(dir).some(
+      (entry) => entry.endsWith(".feature") || entry.endsWith(".tree.yml"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `at` is `dir` or inside it. */
+const inside = (dir: string, at: string) => {
+  const relative = path.relative(dir, at);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+
+/**
+ * `pom snapshot`'s arguments: the spec, a folder on disk, and the pages, each an address
+ * from a slash. An argument from a slash that is also on disk is the spec when the folder
+ * holds one, said in `notes`; else a page, said only when the folder or file could have
+ * been meant, inside one of `near` (the folder pom runs in, its repository): `/` and
+ * `/home` are on every disk, and as plainly pages.
+ */
+export function snapshotArgs(
+  args: ReadonlyArray<string>,
+  near: ReadonlyArray<string> = [process.cwd()],
+): { notes: Array<string>; paths: Array<string>; specs: Array<string> } {
+  const notes: Array<string> = [];
+  const paths: Array<string> = [];
+  const specs: Array<string> = [];
+  for (const arg of args) {
+    if (!arg.startsWith("/")) {
+      specs.push(arg);
+      continue;
+    }
+    const onDisk = statSync(arg, { throwIfNoEntry: false });
+    if (onDisk?.isDirectory() && holdsSpec(arg)) {
+      notes.push(`${arg}: read as the spec, the folder on disk, not a page's address`);
+      specs.push(arg);
+      continue;
+    }
+    if (onDisk && near.some((dir) => inside(dir, arg))) {
+      notes.push(
+        `${arg}: read as a page's address: the ${onDisk.isDirectory() ? "folder" : "file"} on disk there holds no spec`,
+      );
+    }
+    paths.push(arg);
+  }
+  return { notes, paths, specs };
+}
 
 /** How the snapshot becomes each role, or why it cannot. */
 export function waysIn(

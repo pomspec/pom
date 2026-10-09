@@ -1,4 +1,4 @@
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 
 // A page's outline as `ariaSnapshot()` writes it, kept whole: each node's key as
 // written (`heading "Plans" [level=2]`), its text, its children. What pom writes
@@ -90,10 +90,17 @@ export function cleanKey(node: OutlineNode): string {
   return `${node.role} ${written}${level ? ` ${level}` : ""}`;
 }
 
-/** A node's text as a tree writes it: quoted, or a pattern (unquoted) where a run's own email was. */
+/**
+ * A key or a pattern as YAML holds it, by the yaml package's own rules: plain where it
+ * reads back as itself (`button "Save"`), quoted where it would not
+ * (`'button "Chapters: Say hello"'`), on one line.
+ */
+const scalar = (text: string) => stringify(text, { blockQuote: false, lineWidth: 0 }).trimEnd();
+
+/** A node's text as a tree writes it: quoted, or a pattern where a run's own email was. */
 const cleanText = (text: string) => {
   const kept = stable(text);
-  return kept.pattern ? `/${kept.text}/` : JSON.stringify(text);
+  return kept.pattern ? scalar(`/${kept.text}/`) : JSON.stringify(text);
 };
 
 /**
@@ -122,7 +129,7 @@ export function writeOutline(tree: ReadonlyArray<OutlineNode>, indent = ""): str
   return tree
     .map((node) => {
       if (node.role === "text") return `${indent}- text: ${cleanText(node.text ?? "")}`;
-      const key = cleanKey(node);
+      const key = scalar(cleanKey(node));
       if (node.children.length)
         return `${indent}- ${key}:\n${writeOutline(node.children, `${indent}  `)}`;
       if (node.text !== null && node.text !== "")

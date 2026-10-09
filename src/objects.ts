@@ -14,6 +14,8 @@ export type Control = Readonly<{
   /** Every node it is, one per tree it is written in (the shared one, a variation's). */
   nodes: ReadonlyArray<Node>;
   property: string;
+  /** The landmarks and named containers its locator goes through, outermost first. */
+  scopes: ReadonlyArray<Node>;
 }>;
 
 export type ObjectModel = Readonly<{ className: string; controls: ReadonlyArray<Control> }>;
@@ -49,7 +51,15 @@ const PLACE: Record<string, string> = {
 };
 
 /** Members every object has; a control never takes one of their names. */
-const TAKEN = new Set(["expectLoaded", "expectOpen", "expectVisible", "goto", "page", "root"]);
+const TAKEN = new Set([
+  "constructor",
+  "expectLoaded",
+  "expectOpen",
+  "expectVisible",
+  "goto",
+  "page",
+  "root",
+]);
 
 export const literal = (name: Name): string =>
   typeof name === "string" ? JSON.stringify(name) : name.toString();
@@ -98,7 +108,7 @@ export function controlsOf(
     if (used.has(property)) property = camel(`${words(node.name!)} ${node.role}`);
     for (let n = 2; used.has(property); n++) property = `${property.replace(/\d+$/, "")}${n}`;
     used.add(property);
-    return { locator, node, nodes, property };
+    return { locator, node, nodes, property, scopes };
   });
 }
 

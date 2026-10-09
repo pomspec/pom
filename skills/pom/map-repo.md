@@ -53,7 +53,9 @@ opens`, `Then the "<name>" menu opens`.
 - `# as <role>` where the journey changes hands (signing in or out).
   `Given I am signed in as the "<role>"` plays first the journey that makes a visitor
   that role.
-- Names are what the screen reads, exactly: a button's text, a field's label.
+- Names are what the screen reads, exactly: a button's text, a field's label. A name
+  is one control on its page: where several share it (a Revoke on each row), give each
+  a name of its own (an `aria-label` that says which), or `pom check` refuses the line.
 
 Each page needs a `page.tree.yml`. When the app can run, `pom snapshot` writes it (step 3).
 When it cannot yet, write a short one by hand: the controls the journeys use, under

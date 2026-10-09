@@ -1,6 +1,6 @@
 {
   "name": "pomspec",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Journeys in Gherkin, pictured and recorded: a spec of a web app that people read and watch, checked against its pages, compared in pull requests",
   "homepage": "https://github.com/pomspec/pom#readme",
   "bugs": "https://github.com/pomspec/pom/issues",

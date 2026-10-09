@@ -130,7 +130,7 @@ jobs:
       group: pomspec-${{ github.event.pull_request.head.sha || github.sha }}
       cancel-in-progress: true
     steps:
-      - uses: pomspec/pom/action@v0.1.3
+      - uses: pomspec/pom/action@v0.1.4
         with:
           start: npm run dev
           ready-url: http://localhost:3000
@@ -139,8 +139,8 @@ jobs:
           POM_OWNER_PASSWORD: ${{ secrets.POM_OWNER_PASSWORD }}
 ```
 
-The Action and pomspec are released together, at one number: `pomspec/pom/action@v0.1.3`
-is made for `pomspec@0.1.3`. `pom init` pins the Action at the pomspec you installed, which
+The Action and pomspec are released together, at one number: `pomspec/pom/action@v0.1.4`
+is made for `pomspec@0.1.4`. `pom init` pins the Action at the pomspec you installed, which
 `-E` (Start, above) saved at its exact number; when you update one, update the other with
 it. If they differ, the Action warns, says which to raise, and plays all the same.
 

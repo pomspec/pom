@@ -19,7 +19,7 @@ import { videos } from "./play.ts";
 import { newer, publish, pullRequest, section, withSection } from "./pr.ts";
 import { nativePlatform, startDocker } from "./renderer.ts";
 import { rendererOf, report, type ShotsResult, shots } from "./shots.ts";
-import { snapshot, waysIn } from "./snapshot.ts";
+import { snapshot, snapshotArgs, waysIn } from "./snapshot.ts";
 import { defaultBase, filesAt, gitRoot, mergeBase, sourceAt, takenNow } from "./source.ts";
 import { picture } from "./terminal.ts";
 import { runsIn, runsOf } from "./videos.ts";
@@ -107,8 +107,13 @@ const { positionals, values } = parseArgs({
   },
 });
 const [command, ...args] = positionals;
-// A snapshot's paths start with a slash; anything else named is the spec.
-const named = command === "snapshot" ? args.find((a) => !a.startsWith("/")) : args[0];
+// A snapshot's pages are addresses, from a slash; the spec is a folder on disk, which may
+// be named from a slash too (snapshot.ts tells them apart, and says when both could be).
+const snapshotting =
+  command === "snapshot"
+    ? snapshotArgs(args, [process.cwd(), gitRoot(process.cwd()) ?? process.cwd()])
+    : null;
+const named = snapshotting ? snapshotting.specs[0] : args[0];
 
 const fail = (message: string): never => {
   console.error(message);
@@ -380,7 +385,9 @@ switch (command) {
     process.exit(0);
   }
   case "snapshot": {
-    const paths = args.filter((a) => a.startsWith("/"));
+    const { notes, paths, specs } = snapshotting!;
+    for (const note of notes) console.log(note);
+    if (specs.length > 1) fail(`pom snapshot takes one spec, not ${specs.join(" and ")}`);
     if (!paths.length) fail("pom snapshot needs a path: pom snapshot /sign-up [--as <role>]");
     const { config, out, spec } = await setup();
     const { compiled } = checkSpec(spec, { signIns: new Set(Object.keys(config.roles)) });
